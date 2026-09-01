@@ -28,6 +28,7 @@ final class InputEventRecorder {
     private var startupError: Error?
 
     func start(at startTime: CMTime, requestPermission: Bool = true) throws {
+        while finishedSemaphore.wait(timeout: .now()) == .success {}
         if requestPermission, !CGPreflightListenEventAccess() {
             guard CGRequestListenEventAccess() else {
                 throw RecorderError.permissionDenied

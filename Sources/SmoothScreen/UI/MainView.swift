@@ -4,21 +4,32 @@ struct MainView: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider()
-
-            if model.isRecording {
-                recordingView
+        Group {
+            if let editor = model.editor {
+                ProjectEditorView(model: editor) {
+                    model.closeEditor()
+                }
             } else {
-                sourcePicker
+                VStack(spacing: 0) {
+                    header
+                    Divider()
+
+                    if model.isRecording {
+                        recordingView
+                    } else {
+                        sourcePicker
+                    }
+                }
+                .background(Color(nsColor: .windowBackgroundColor))
             }
         }
-        .background(Color(nsColor: .windowBackgroundColor))
         .task {
-            if model.sources.isEmpty {
+            if model.editor == nil, model.sources.isEmpty {
                 await model.refreshSources()
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            model.refreshPermissionStatus()
         }
         .alert(item: $model.presentedError) { error in
             Alert(
@@ -47,6 +58,12 @@ struct MainView: View {
 
             if !model.isRecording {
                 Button {
+                    model.openProject()
+                } label: {
+                    Label("Open", systemImage: "folder")
+                }
+
+                Button {
                     Task { await model.refreshSources() }
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
@@ -59,6 +76,11 @@ struct MainView: View {
 
     private var sourcePicker: some View {
         VStack(spacing: 0) {
+            if !model.hasInputMonitoringPermission || !model.hasScreenRecordingPermission {
+                permissionBanner
+                Divider()
+            }
+
             if model.isLoadingSources && model.sources.isEmpty {
                 Spacer()
                 ProgressView("Finding displays and windows…")
@@ -79,8 +101,14 @@ struct MainView: View {
 
             Divider()
             HStack {
-                Toggle("Record system audio", isOn: $model.includesSystemAudio)
-                    .toggleStyle(.checkbox)
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle("Record system audio", isOn: $model.includesSystemAudio)
+                        .toggleStyle(.checkbox)
+                    if #available(macOS 15, *) {
+                        Toggle("Record microphone", isOn: $model.includesMicrophone)
+                            .toggleStyle(.checkbox)
+                    }
+                }
 
                 Spacer()
 
@@ -113,6 +141,37 @@ struct MainView: View {
                 .padding(.vertical, 12)
             }
         }
+    }
+
+    private var permissionBanner: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "hand.raised.fill")
+                .foregroundStyle(.orange)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Recording permissions needed")
+                    .font(.subheadline.weight(.semibold))
+                Text("Enable the missing permissions in Privacy & Security, then return to SmoothScreen.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            if !model.hasScreenRecordingPermission {
+                Button("Screen Recording") {
+                    model.openScreenRecordingSettings()
+                }
+            }
+            if !model.hasInputMonitoringPermission {
+                Button("Input Monitoring") {
+                    model.openInputMonitoringSettings()
+                }
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
+        .background(.orange.opacity(0.08))
     }
 
     @ViewBuilder

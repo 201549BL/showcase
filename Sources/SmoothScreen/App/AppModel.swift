@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Foundation
 
 @MainActor
@@ -6,12 +7,16 @@ final class AppModel: ObservableObject {
     @Published private(set) var sources: [AvailableCaptureSource] = []
     @Published var selectedSourceID: String?
     @Published var includesSystemAudio = true
+    @Published var includesMicrophone = false
+    @Published private(set) var hasInputMonitoringPermission = CGPreflightListenEventAccess()
+    @Published private(set) var hasScreenRecordingPermission = CGPreflightScreenCaptureAccess()
     @Published private(set) var isLoadingSources = false
     @Published private(set) var isStartingOrStopping = false
     @Published private(set) var isRecording = false
     @Published private(set) var elapsedTime: TimeInterval = 0
     @Published private(set) var activeProjectURL: URL?
     @Published private(set) var lastRecording: CompletedRecording?
+    @Published private(set) var editor: EditorModel?
     @Published var presentedError: PresentedError?
 
     private let sourceService: CaptureSourceService
@@ -25,6 +30,17 @@ final class AppModel: ObservableObject {
     ) {
         self.sourceService = sourceService
         self.coordinator = coordinator
+        let startupProjectPath = ProcessInfo.processInfo.environment["SMOOTHSCREEN_PROJECT"]
+            ?? CommandLine.arguments.dropFirst().first(where: { $0.hasSuffix(".screenproject") })
+        if let startupProjectPath {
+            do {
+                editor = try EditorModel(projectURL: URL(fileURLWithPath: startupProjectPath))
+            } catch {
+                presentedError = PresentedError(
+                    message: (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                )
+            }
+        }
     }
 
     var selectedSource: AvailableCaptureSource? {
@@ -33,6 +49,12 @@ final class AppModel: ObservableObject {
 
     func refreshSources() async {
         guard !isRecording else { return }
+        refreshPermissionStatus()
+        guard hasScreenRecordingPermission else {
+            sources = []
+            selectedSourceID = nil
+            return
+        }
         isLoadingSources = true
         defer { isLoadingSources = false }
 
@@ -46,6 +68,19 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func refreshPermissionStatus() {
+        hasInputMonitoringPermission = CGPreflightListenEventAccess()
+        hasScreenRecordingPermission = CGPreflightScreenCaptureAccess()
+    }
+
+    func openInputMonitoringSettings() {
+        openPrivacySettings(anchor: "Privacy_ListenEvent")
+    }
+
+    func openScreenRecordingSettings() {
+        openPrivacySettings(anchor: "Privacy_ScreenCapture")
+    }
+
     func startRecording() async {
         guard let selectedSource else { return }
         isStartingOrStopping = true
@@ -54,7 +89,8 @@ final class AppModel: ObservableObject {
         do {
             activeProjectURL = try await coordinator.start(
                 source: selectedSource.descriptor,
-                includesSystemAudio: includesSystemAudio
+                includesSystemAudio: includesSystemAudio,
+                includesMicrophone: includesMicrophone
             )
             isRecording = true
             elapsedTime = 0
@@ -78,9 +114,31 @@ final class AppModel: ObservableObject {
             elapsedTime = completed.duration
             activeProjectURL = nil
             lastRecording = completed
+            editor = try EditorModel(projectURL: completed.projectURL)
         } catch {
             present(error)
         }
+    }
+
+    func openProject() {
+        let panel = NSOpenPanel()
+        panel.title = "Open SmoothScreen Project"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Open"
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            editor = try EditorModel(projectURL: url)
+        } catch {
+            present(error)
+        }
+    }
+
+    func closeEditor() {
+        editor?.player.pause()
+        editor = nil
     }
 
     func revealLastRecording() {
@@ -106,6 +164,13 @@ final class AppModel: ObservableObject {
         presentedError = PresentedError(
             message: (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         )
+    }
+
+    private func openPrivacySettings(anchor: String) {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)"
+        ) else { return }
+        NSWorkspace.shared.open(url)
     }
 }
 

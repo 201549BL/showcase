@@ -1,4 +1,3 @@
-import AppKit
 import CoreGraphics
 import ScreenCaptureKit
 
@@ -49,7 +48,7 @@ struct CaptureSourceService {
                         title: window.title?.isEmpty == false ? window.title! : "Untitled Window",
                         applicationName: window.owningApplication?.applicationName,
                         frame: CodableRect(window.frame),
-                        scaleFactor: scaleFactor(at: window.frame.center)
+                        scaleFactor: scaleFactor(for: window, displays: content.displays)
                     )
                 )
             }
@@ -97,11 +96,12 @@ struct CaptureSourceService {
         return Double(mode.pixelWidth) / display.frame.width
     }
 
-    private func scaleFactor(at point: CGPoint) -> Double {
-        let scale = NSScreen.screens.first(where: { $0.frame.contains(point) })?.backingScaleFactor
-            ?? NSScreen.main?.backingScaleFactor
-            ?? 1
-        return Double(scale)
+    private func scaleFactor(for window: SCWindow, displays: [SCDisplay]) -> Double {
+        let intersectingDisplays = displays.filter { $0.frame.intersects(window.frame) }
+        let display = intersectingDisplays.max { first, second in
+            first.frame.intersection(window.frame).area < second.frame.intersection(window.frame).area
+        }
+        return display.map(scaleFactor(for:)) ?? 1
     }
 }
 
@@ -124,7 +124,8 @@ enum ResolvedCaptureSource {
 }
 
 private extension CGRect {
-    var center: CGPoint {
-        CGPoint(x: midX, y: midY)
+    var area: Double {
+        guard !isNull, !isInfinite else { return 0 }
+        return width * height
     }
 }

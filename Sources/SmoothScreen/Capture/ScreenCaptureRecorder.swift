@@ -27,6 +27,7 @@ final class ScreenCaptureRecorder: NSObject {
     private var writer: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
     private var audioInput: AVAssetWriterInput?
+    private var microphoneInput: AVAssetWriterInput?
     private var isRecording = false
     private var terminalError: Error?
     private var droppedVideoFrameCount = 0
@@ -37,7 +38,8 @@ final class ScreenCaptureRecorder: NSObject {
         descriptor: CaptureSourceDescriptor,
         outputURL: URL,
         startTime: CMTime,
-        includesSystemAudio: Bool
+        includesSystemAudio: Bool,
+        includesMicrophone: Bool
     ) async throws {
         guard !isRecording else { throw RecorderError.alreadyRecording }
 
@@ -83,6 +85,27 @@ final class ScreenCaptureRecorder: NSObject {
             }
         }
 
+        var microphoneInput: AVAssetWriterInput?
+        if includesMicrophone {
+            guard #available(macOS 15, *) else {
+                throw RecorderError.assetWriterFailed("Microphone capture requires macOS 15 or newer.")
+            }
+            let input = AVAssetWriterInput(
+                mediaType: .audio,
+                outputSettings: [
+                    AVFormatIDKey: kAudioFormatMPEG4AAC,
+                    AVSampleRateKey: 48_000,
+                    AVNumberOfChannelsKey: 1,
+                    AVEncoderBitRateKey: 128_000
+                ]
+            )
+            input.expectsMediaDataInRealTime = true
+            if writer.canAdd(input) {
+                writer.add(input)
+                microphoneInput = input
+            }
+        }
+
         guard writer.startWriting() else {
             throw RecorderError.assetWriterFailed(writer.error?.localizedDescription ?? "Unknown encoder error")
         }
@@ -99,6 +122,9 @@ final class ScreenCaptureRecorder: NSObject {
         configuration.excludesCurrentProcessAudio = true
         configuration.sampleRate = 48_000
         configuration.channelCount = 2
+        if #available(macOS 15, *) {
+            configuration.captureMicrophone = includesMicrophone
+        }
 
         let stream = SCStream(
             filter: source.contentFilter,
@@ -109,10 +135,14 @@ final class ScreenCaptureRecorder: NSObject {
         if includesSystemAudio {
             try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: audioQueue)
         }
+        if #available(macOS 15, *), includesMicrophone {
+            try stream.addStreamOutput(self, type: .microphone, sampleHandlerQueue: audioQueue)
+        }
 
         self.writer = writer
         self.videoInput = videoInput
         self.audioInput = audioInput
+        self.microphoneInput = microphoneInput
         self.stream = stream
         terminalError = nil
         droppedVideoFrameCount = 0
@@ -135,11 +165,17 @@ final class ScreenCaptureRecorder: NSObject {
         }
 
         isRecording = false
-        try await stream.stopCapture()
+        var captureStopError: Error?
+        do {
+            try await stream.stopCapture()
+        } catch {
+            captureStopError = error
+        }
         writerQueue.sync {}
 
         videoInput?.markAsFinished()
         audioInput?.markAsFinished()
+        microphoneInput?.markAsFinished()
 
         await withCheckedContinuation { continuation in
             writer.finishWriting {
@@ -155,6 +191,7 @@ final class ScreenCaptureRecorder: NSObject {
         let streamError = terminalError
         clearSession()
 
+        if let captureStopError { throw captureStopError }
         if let streamError { throw streamError }
         if writer.status != .completed {
             throw RecorderError.assetWriterFailed(
@@ -189,6 +226,7 @@ final class ScreenCaptureRecorder: NSObject {
         writer = nil
         videoInput = nil
         audioInput = nil
+        microphoneInput = nil
     }
 
     private func evenPixelDimension(_ value: Double) -> Int {
@@ -210,11 +248,12 @@ extension ScreenCaptureRecorder: SCStreamOutput, SCStreamDelegate {
     ) {
         switch outputType {
         case .screen:
+            guard isCompleteScreenFrame(sampleBuffer) else { return }
             append(sampleBuffer, to: videoInput, isVideo: true)
         case .audio:
             append(sampleBuffer, to: audioInput, isVideo: false)
         case .microphone:
-            break
+            append(sampleBuffer, to: microphoneInput, isVideo: false)
         @unknown default:
             break
         }
@@ -222,6 +261,20 @@ extension ScreenCaptureRecorder: SCStreamOutput, SCStreamDelegate {
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         terminalError = error
+    }
+
+    private func isCompleteScreenFrame(_ sampleBuffer: CMSampleBuffer) -> Bool {
+        guard
+            let attachments = CMSampleBufferGetSampleAttachmentsArray(
+                sampleBuffer,
+                createIfNecessary: false
+            ) as? [[SCStreamFrameInfo: Any]],
+            let statusRawValue = attachments.first?[.status] as? Int,
+            let status = SCFrameStatus(rawValue: statusRawValue)
+        else {
+            return false
+        }
+        return status == .complete
     }
 }
 

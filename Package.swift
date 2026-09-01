@@ -13,7 +13,10 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "SmoothScreen",
-            path: "Sources/SmoothScreen"
+            path: "Sources/SmoothScreen",
+            linkerSettings: [
+                .linkedFramework("AVKit")
+            ]
         ),
         .testTarget(
             name: "SmoothScreenTests",

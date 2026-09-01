@@ -50,6 +50,7 @@ struct ProjectStoreTests {
             scaleFactor: 2
         )
         let project = RecordingProject(
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000.125),
             recording: RecordingMetadata(
                 source: source,
                 width: 2_880,
@@ -57,6 +58,7 @@ struct ProjectStoreTests {
                 framesPerSecond: 60,
                 duration: 5,
                 includesSystemAudio: true,
+                includesMicrophone: false,
                 videoRelativePath: "media/screen.mov",
                 eventsRelativePath: "events/input-events.json"
             )

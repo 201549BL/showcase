@@ -12,6 +12,7 @@ struct RecordingProject: Codable, Equatable {
     var canvas: CanvasSettings
     var cursor: CursorSettings
     var zoomSegments: [ZoomSegment]
+    var timeline: TimelineSettings?
 
     init(
         id: UUID = UUID(),
@@ -19,7 +20,8 @@ struct RecordingProject: Codable, Equatable {
         recording: RecordingMetadata,
         canvas: CanvasSettings = .default,
         cursor: CursorSettings = .default,
-        zoomSegments: [ZoomSegment] = []
+        zoomSegments: [ZoomSegment] = [],
+        timeline: TimelineSettings = .default
     ) {
         version = Self.currentVersion
         self.id = id
@@ -28,6 +30,7 @@ struct RecordingProject: Codable, Equatable {
         self.canvas = canvas
         self.cursor = cursor
         self.zoomSegments = zoomSegments
+        self.timeline = timeline
     }
 }
 
@@ -38,6 +41,7 @@ struct RecordingMetadata: Codable, Equatable {
     var framesPerSecond: Int
     var duration: Double?
     var includesSystemAudio: Bool
+    var includesMicrophone: Bool?
     var videoRelativePath: String
     var eventsRelativePath: String
 }
@@ -84,8 +88,8 @@ struct CodableRect: Codable, Equatable, Hashable {
 }
 
 struct CodablePoint: Codable, Equatable, Hashable {
-    let x: Double
-    let y: Double
+    var x: Double
+    var y: Double
 
     init(_ point: CGPoint) {
         x = point.x
@@ -132,6 +136,13 @@ struct CursorSettings: Codable, Equatable {
         hideAfter: 2,
         showsClickAnimation: true
     )
+}
+
+struct TimelineSettings: Codable, Equatable {
+    var trimStart: Double
+    var trimEnd: Double?
+
+    static let `default` = TimelineSettings(trimStart: 0, trimEnd: nil)
 }
 
 struct ZoomSegment: Codable, Equatable, Identifiable {

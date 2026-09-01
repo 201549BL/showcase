@@ -14,6 +14,7 @@ struct ProjectStore {
 
     private let fileManager: FileManager
     private let encoder: JSONEncoder
+    private let decoder: JSONDecoder
     private let projectsDirectory: URL?
 
     init(fileManager: FileManager = .default, projectsDirectory: URL? = nil) {
@@ -22,6 +23,8 @@ struct ProjectStore {
         encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         encoder.dateEncodingStrategy = .secondsSince1970
+        decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
     }
 
     func defaultProjectsDirectory() throws -> URL {
@@ -68,6 +71,31 @@ struct ProjectStore {
     func save(events: [RecordedInputEvent], to locations: ProjectLocations) throws {
         let data = try encoder.encode(events)
         try data.write(to: locations.eventsURL, options: .atomic)
+    }
+
+    func loadProject(at projectURL: URL) throws -> RecordingProject {
+        let locations = locations(for: projectURL)
+        return try decoder.decode(
+            RecordingProject.self,
+            from: Data(contentsOf: locations.projectJSONURL)
+        )
+    }
+
+    func loadEvents(at projectURL: URL) throws -> [RecordedInputEvent] {
+        let locations = locations(for: projectURL)
+        return try decoder.decode(
+            [RecordedInputEvent].self,
+            from: Data(contentsOf: locations.eventsURL)
+        )
+    }
+
+    func locations(for projectURL: URL) -> ProjectLocations {
+        ProjectLocations(
+            projectURL: projectURL,
+            projectJSONURL: projectURL.appendingPathComponent("project.json"),
+            videoURL: projectURL.appendingPathComponent("media/screen.mov"),
+            eventsURL: projectURL.appendingPathComponent("events/input-events.json")
+        )
     }
 
     private func sanitizedProjectName(_ name: String) -> String {

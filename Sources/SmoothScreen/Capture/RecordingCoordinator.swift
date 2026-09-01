@@ -33,7 +33,8 @@ final class RecordingCoordinator {
 
     func start(
         source descriptor: CaptureSourceDescriptor,
-        includesSystemAudio: Bool
+        includesSystemAudio: Bool,
+        includesMicrophone: Bool
     ) async throws -> URL {
         let resolvedSource = try await sourceService.resolve(descriptor)
         let locations = try projectStore.createProjectDirectory(named: projectName())
@@ -47,6 +48,7 @@ final class RecordingCoordinator {
             framesPerSecond: 60,
             duration: nil,
             includesSystemAudio: includesSystemAudio,
+            includesMicrophone: includesMicrophone,
             videoRelativePath: "media/screen.mov",
             eventsRelativePath: "events/input-events.json"
         )
@@ -61,7 +63,8 @@ final class RecordingCoordinator {
                 descriptor: descriptor,
                 outputURL: locations.videoURL,
                 startTime: startTime,
-                includesSystemAudio: includesSystemAudio
+                includesSystemAudio: includesSystemAudio,
+                includesMicrophone: includesMicrophone
             )
         } catch {
             _ = inputRecorder.stop()
@@ -95,6 +98,21 @@ final class RecordingCoordinator {
 
         project.completedAt = Date()
         project.recording.duration = duration
+        project.timeline = TimelineSettings(trimStart: 0, trimEnd: duration)
+        let localizedEvents = InputEventLocalizer().localize(
+            events,
+            source: project.recording.source,
+            pixelWidth: project.recording.width,
+            pixelHeight: project.recording.height
+        )
+        project.zoomSegments = AutoZoomPlanner().plan(
+            events: localizedEvents,
+            sourceSize: CGSize(
+                width: project.recording.width,
+                height: project.recording.height
+            ),
+            duration: duration
+        )
         try projectStore.save(events: events, to: locations)
         try projectStore.save(project, to: locations)
 
