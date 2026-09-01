@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreImage
 import CoreMedia
 import CoreVideo
 import Foundation
@@ -26,8 +27,13 @@ final class ScreenCaptureRecorder: NSObject {
     private var stream: SCStream?
     private var writer: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
+    private var videoAdaptor: AVAssetWriterInputPixelBufferAdaptor?
     private var audioInput: AVAssetWriterInput?
     private var microphoneInput: AVAssetWriterInput?
+    private var captureFrameLayout: CaptureFrameLayout?
+    private var frameAdmission: CaptureFrameAdmission?
+    private let frameAnalyzer = CaptureFrameAnalyzer()
+    private let imageContext = CIContext(options: [.cacheIntermediates: false])
     private var isRecording = false
     private var terminalError: Error?
     private var droppedVideoFrameCount = 0
@@ -61,6 +67,15 @@ final class ScreenCaptureRecorder: NSObject {
             ]
         )
         videoInput.expectsMediaDataInRealTime = true
+        let videoAdaptor = AVAssetWriterInputPixelBufferAdaptor(
+            assetWriterInput: videoInput,
+            sourcePixelBufferAttributes: [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                kCVPixelBufferWidthKey as String: width,
+                kCVPixelBufferHeightKey as String: height,
+                kCVPixelBufferIOSurfacePropertiesKey as String: [:]
+            ]
+        )
 
         guard writer.canAdd(videoInput) else {
             throw RecorderError.assetWriterFailed("The video encoder configuration is unsupported.")
@@ -141,8 +156,13 @@ final class ScreenCaptureRecorder: NSObject {
 
         self.writer = writer
         self.videoInput = videoInput
+        self.videoAdaptor = videoAdaptor
         self.audioInput = audioInput
         self.microphoneInput = microphoneInput
+        captureFrameLayout = CaptureFrameLayout(
+            outputSize: CGSize(width: width, height: height)
+        )
+        frameAdmission = CaptureFrameAdmission(recordingStartTime: startTime)
         self.stream = stream
         terminalError = nil
         droppedVideoFrameCount = 0
@@ -201,22 +221,71 @@ final class ScreenCaptureRecorder: NSObject {
         return result
     }
 
-    private func append(_ sampleBuffer: CMSampleBuffer, to input: AVAssetWriterInput?, isVideo: Bool) {
+    private func appendVideo(_ sampleBuffer: CMSampleBuffer, frame: ScreenFrame) {
+        guard isRecording, sampleBuffer.isValid, sampleBuffer.dataReadiness == .ready else { return }
+
+        writerQueue.async { [weak self] in
+            guard
+                let self,
+                self.isRecording,
+                let input = self.videoInput,
+                let adaptor = self.videoAdaptor,
+                let layout = self.captureFrameLayout,
+                let sourceBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
+                let pool = adaptor.pixelBufferPool
+            else { return }
+            guard input.isReadyForMoreMediaData else {
+                self.droppedVideoFrameCount += 1
+                return
+            }
+            guard let presentationTime = self.frameAdmission?.presentationTime(
+                for: sampleBuffer.presentationTimeStamp,
+                isBlank: frame.isVisuallyBlank
+            ) else { return }
+
+            var destinationBuffer: CVPixelBuffer?
+            guard
+                CVPixelBufferPoolCreatePixelBuffer(nil, pool, &destinationBuffer) == kCVReturnSuccess,
+                let destinationBuffer
+            else {
+                self.droppedVideoFrameCount += 1
+                return
+            }
+
+            let sourceImage = CIImage(cvPixelBuffer: sourceBuffer)
+            let frameRect = layout.pixelContentRect(
+                metadataRect: frame.contentRect,
+                scaleFactor: frame.scaleFactor,
+                imageExtent: sourceImage.extent
+            )
+            let normalizedImage = sourceImage
+                .cropped(to: frameRect)
+                .transformed(by: layout.transformToFill(contentRect: frameRect))
+                .cropped(to: CGRect(origin: .zero, size: layout.outputSize))
+            self.imageContext.render(normalizedImage, to: destinationBuffer)
+
+            if !adaptor.append(
+                destinationBuffer,
+                withPresentationTime: presentationTime
+            ) {
+                self.terminalError = self.writer?.error
+                    ?? RecorderError.assetWriterFailed("Failed to append a media sample.")
+            }
+        }
+    }
+
+    private func appendAudio(_ sampleBuffer: CMSampleBuffer, to input: AVAssetWriterInput?) {
         guard isRecording, sampleBuffer.isValid, sampleBuffer.dataReadiness == .ready else { return }
 
         writerQueue.async { [weak self] in
             guard let self, self.isRecording, let input else { return }
             guard input.isReadyForMoreMediaData else {
-                if isVideo {
-                    self.droppedVideoFrameCount += 1
-                } else {
-                    self.droppedAudioSampleCount += 1
-                }
+                self.droppedAudioSampleCount += 1
                 return
             }
             if !input.append(sampleBuffer) {
                 self.terminalError = self.writer?.error
-                    ?? RecorderError.assetWriterFailed("Failed to append a media sample.")
+                    ?? RecorderError.assetWriterFailed("Failed to append an audio sample.")
             }
         }
     }
@@ -225,8 +294,11 @@ final class ScreenCaptureRecorder: NSObject {
         stream = nil
         writer = nil
         videoInput = nil
+        videoAdaptor = nil
         audioInput = nil
         microphoneInput = nil
+        captureFrameLayout = nil
+        frameAdmission = nil
     }
 
     private func evenPixelDimension(_ value: Double) -> Int {
@@ -248,12 +320,12 @@ extension ScreenCaptureRecorder: SCStreamOutput, SCStreamDelegate {
     ) {
         switch outputType {
         case .screen:
-            guard isCompleteScreenFrame(sampleBuffer) else { return }
-            append(sampleBuffer, to: videoInput, isVideo: true)
+            guard let frame = completeScreenFrame(sampleBuffer) else { return }
+            appendVideo(sampleBuffer, frame: frame)
         case .audio:
-            append(sampleBuffer, to: audioInput, isVideo: false)
+            appendAudio(sampleBuffer, to: audioInput)
         case .microphone:
-            append(sampleBuffer, to: microphoneInput, isVideo: false)
+            appendAudio(sampleBuffer, to: microphoneInput)
         @unknown default:
             break
         }
@@ -263,7 +335,7 @@ extension ScreenCaptureRecorder: SCStreamOutput, SCStreamDelegate {
         terminalError = error
     }
 
-    private func isCompleteScreenFrame(_ sampleBuffer: CMSampleBuffer) -> Bool {
+    private func completeScreenFrame(_ sampleBuffer: CMSampleBuffer) -> ScreenFrame? {
         guard
             let attachments = CMSampleBufferGetSampleAttachmentsArray(
                 sampleBuffer,
@@ -272,10 +344,36 @@ extension ScreenCaptureRecorder: SCStreamOutput, SCStreamDelegate {
             let statusRawValue = attachments.first?[.status] as? Int,
             let status = SCFrameStatus(rawValue: statusRawValue)
         else {
-            return false
+            return nil
         }
-        return status == .complete
+        guard status == .complete else { return nil }
+
+        let contentRect: CGRect?
+        if let rect = attachments.first?[.contentRect] as? CGRect {
+            contentRect = rect
+        } else if
+            let dictionary = attachments.first?[.contentRect] as? NSDictionary,
+            let rect = CGRect(dictionaryRepresentation: dictionary)
+        {
+            contentRect = rect
+        } else {
+            contentRect = nil
+        }
+        let scaleFactor = (attachments.first?[.scaleFactor] as? NSNumber)?.doubleValue ?? 1
+        let isVisuallyBlank = CMSampleBufferGetImageBuffer(sampleBuffer)
+            .map(frameAnalyzer.isVisuallyBlank) ?? false
+        return ScreenFrame(
+            contentRect: contentRect,
+            scaleFactor: scaleFactor,
+            isVisuallyBlank: isVisuallyBlank
+        )
     }
+}
+
+private struct ScreenFrame {
+    let contentRect: CGRect?
+    let scaleFactor: Double
+    let isVisuallyBlank: Bool
 }
 
 struct CaptureStatistics: Equatable {

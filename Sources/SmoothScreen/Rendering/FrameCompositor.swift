@@ -38,7 +38,8 @@ final class FrameCompositor {
             sourceSize: CGSize(
                 width: project.recording.width,
                 height: project.recording.height
-            )
+            ),
+            cursorPath: cursorPath
         )
         clickEvents = localizedEvents.filter { $0.isPrimaryClick && $0.position != nil }
 
