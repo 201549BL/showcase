@@ -57,6 +57,7 @@ struct ZoomTimelineView: View {
                             .zIndex(20_000)
                     }
                     .frame(height: 58)
+                    .coordinateSpace(name: ZoomTimelineCoordinateSpace.track)
                     .clipped()
                 }
             }
@@ -144,9 +145,9 @@ private struct ZoomTimelineBlock: View {
     let geometry: TimelineGeometry
     let isSelected: Bool
 
-    @State private var moveAnchor: Double?
-    @State private var startAnchor: Double?
-    @State private var endAnchor: Double?
+    @State private var moveProjection: TimelineDragProjection?
+    @State private var startProjection: TimelineDragProjection?
+    @State private var endProjection: TimelineDragProjection?
 
     var body: some View {
         ZStack {
@@ -190,53 +191,84 @@ private struct ZoomTimelineBlock: View {
     }
 
     private var moveGesture: some Gesture {
-        DragGesture(minimumDistance: 2)
+        DragGesture(
+            minimumDistance: 2,
+            coordinateSpace: .named(ZoomTimelineCoordinateSpace.track)
+        )
             .onChanged { value in
-                if moveAnchor == nil {
-                    moveAnchor = zoom.startTime
+                if moveProjection == nil {
+                    moveProjection = TimelineDragProjection(
+                        initialTime: zoom.startTime,
+                        pointerStartX: value.startLocation.x,
+                        geometry: geometry
+                    )
                     model.selectZoom(id: zoom.id, seekToFocus: false)
                 }
-                guard let moveAnchor else { return }
-                let delta = geometry.timeDelta(for: value.translation.width)
-                model.moveZoom(id: zoom.id, toStart: moveAnchor + delta)
+                guard let moveProjection else { return }
+                model.moveZoom(
+                    id: zoom.id,
+                    toStart: moveProjection.time(atPointerX: value.location.x)
+                )
             }
             .onEnded { _ in
-                moveAnchor = nil
+                moveProjection = nil
                 model.commitTimelineEdit()
             }
     }
 
     private var startResizeGesture: some Gesture {
-        DragGesture(minimumDistance: 1)
+        DragGesture(
+            minimumDistance: 1,
+            coordinateSpace: .named(ZoomTimelineCoordinateSpace.track)
+        )
             .onChanged { value in
-                if startAnchor == nil {
-                    startAnchor = zoom.startTime
+                if startProjection == nil {
+                    startProjection = TimelineDragProjection(
+                        initialTime: zoom.startTime,
+                        pointerStartX: value.startLocation.x,
+                        geometry: geometry
+                    )
                     model.selectZoom(id: zoom.id, seekToFocus: false)
                 }
-                guard let startAnchor else { return }
-                let delta = geometry.timeDelta(for: value.translation.width)
-                model.resizeZoomStart(id: zoom.id, to: startAnchor + delta)
+                guard let startProjection else { return }
+                model.resizeZoomStart(
+                    id: zoom.id,
+                    to: startProjection.time(atPointerX: value.location.x)
+                )
             }
             .onEnded { _ in
-                startAnchor = nil
+                startProjection = nil
                 model.commitTimelineEdit()
             }
     }
 
     private var endResizeGesture: some Gesture {
-        DragGesture(minimumDistance: 1)
+        DragGesture(
+            minimumDistance: 1,
+            coordinateSpace: .named(ZoomTimelineCoordinateSpace.track)
+        )
             .onChanged { value in
-                if endAnchor == nil {
-                    endAnchor = zoom.endTime
+                if endProjection == nil {
+                    endProjection = TimelineDragProjection(
+                        initialTime: zoom.endTime,
+                        pointerStartX: value.startLocation.x,
+                        geometry: geometry
+                    )
                     model.selectZoom(id: zoom.id, seekToFocus: false)
                 }
-                guard let endAnchor else { return }
-                let delta = geometry.timeDelta(for: value.translation.width)
-                model.resizeZoomEnd(id: zoom.id, to: endAnchor + delta)
+                guard let endProjection else { return }
+                model.resizeZoomEnd(
+                    id: zoom.id,
+                    to: endProjection.time(atPointerX: value.location.x)
+                )
             }
             .onEnded { _ in
-                endAnchor = nil
+                endProjection = nil
                 model.commitTimelineEdit()
             }
     }
+}
+
+private enum ZoomTimelineCoordinateSpace {
+    static let track = "SmoothScreen.ZoomTimeline.Track"
 }

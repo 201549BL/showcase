@@ -31,6 +31,16 @@ enum TimelineBlockStacking {
     }
 }
 
+struct TimelineDragProjection: Equatable {
+    let initialTime: Double
+    let pointerStartX: Double
+    let geometry: TimelineGeometry
+
+    func time(atPointerX pointerX: Double) -> Double {
+        initialTime + geometry.timeDelta(for: pointerX - pointerStartX)
+    }
+}
+
 struct PreviewFocusMapper: Equatable {
     let viewSize: CGSize
     let canvasSize: CGSize

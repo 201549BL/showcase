@@ -46,6 +46,18 @@ struct EditorGeometryTests {
         #expect(selected > laterNeighbor)
     }
 
+    @Test("Timeline drag remains anchored while the block moves")
+    func stableTimelineDragProjection() {
+        let projection = TimelineDragProjection(
+            initialTime: 4,
+            pointerStartX: 100,
+            geometry: TimelineGeometry(duration: 20, width: 1_000)
+        )
+
+        #expect(projection.time(atPointerX: 250) == 7)
+        #expect(projection.time(atPointerX: 50) == 3)
+    }
+
     private func makeMapper(
         viewSize: CGSize = CGSize(width: 1_920, height: 1_080)
     ) -> PreviewFocusMapper {
