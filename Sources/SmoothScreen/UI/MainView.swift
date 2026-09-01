@@ -29,7 +29,7 @@ struct MainView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            model.refreshPermissionStatus()
+            Task { await model.refreshSources() }
         }
         .alert(item: $model.presentedError) { error in
             Alert(
@@ -151,7 +151,7 @@ struct MainView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Recording permissions needed")
                     .font(.subheadline.weight(.semibold))
-                Text("Enable the missing permissions in Privacy & Security, then return to SmoothScreen.")
+                Text("Request each missing permission, then return to SmoothScreen after enabling it.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -160,12 +160,12 @@ struct MainView: View {
 
             if !model.hasScreenRecordingPermission {
                 Button("Screen Recording") {
-                    model.openScreenRecordingSettings()
+                    Task { await model.requestScreenRecordingPermission() }
                 }
             }
             if !model.hasInputMonitoringPermission {
                 Button("Input Monitoring") {
-                    model.openInputMonitoringSettings()
+                    model.requestInputMonitoringPermission()
                 }
             }
         }

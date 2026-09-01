@@ -1,5 +1,4 @@
 import AppKit
-import ApplicationServices
 import Foundation
 
 @MainActor
@@ -8,8 +7,8 @@ final class AppModel: ObservableObject {
     @Published var selectedSourceID: String?
     @Published var includesSystemAudio = true
     @Published var includesMicrophone = false
-    @Published private(set) var hasInputMonitoringPermission = CGPreflightListenEventAccess()
-    @Published private(set) var hasScreenRecordingPermission = CGPreflightScreenCaptureAccess()
+    @Published private(set) var hasInputMonitoringPermission: Bool
+    @Published private(set) var hasScreenRecordingPermission: Bool
     @Published private(set) var isLoadingSources = false
     @Published private(set) var isStartingOrStopping = false
     @Published private(set) var isRecording = false
@@ -21,15 +20,20 @@ final class AppModel: ObservableObject {
 
     private let sourceService: CaptureSourceService
     private let coordinator: RecordingCoordinator
+    private let privacyPermissions: any PrivacyPermissionClient
     private var elapsedTask: Task<Void, Never>?
     private var recordingStartedAt: Date?
 
     init(
         sourceService: CaptureSourceService = CaptureSourceService(),
-        coordinator: RecordingCoordinator = RecordingCoordinator()
+        coordinator: RecordingCoordinator = RecordingCoordinator(),
+        privacyPermissions: any PrivacyPermissionClient = SystemPrivacyPermissionClient()
     ) {
         self.sourceService = sourceService
         self.coordinator = coordinator
+        self.privacyPermissions = privacyPermissions
+        hasInputMonitoringPermission = privacyPermissions.hasInputMonitoringAccess()
+        hasScreenRecordingPermission = privacyPermissions.hasScreenRecordingAccess()
         let startupProjectPath = ProcessInfo.processInfo.environment["SMOOTHSCREEN_PROJECT"]
             ?? CommandLine.arguments.dropFirst().first(where: { $0.hasSuffix(".screenproject") })
         if let startupProjectPath {
@@ -69,16 +73,26 @@ final class AppModel: ObservableObject {
     }
 
     func refreshPermissionStatus() {
-        hasInputMonitoringPermission = CGPreflightListenEventAccess()
-        hasScreenRecordingPermission = CGPreflightScreenCaptureAccess()
+        hasInputMonitoringPermission = privacyPermissions.hasInputMonitoringAccess()
+        hasScreenRecordingPermission = privacyPermissions.hasScreenRecordingAccess()
     }
 
-    func openInputMonitoringSettings() {
-        openPrivacySettings(anchor: "Privacy_ListenEvent")
+    func requestInputMonitoringPermission() {
+        _ = privacyPermissions.requestInputMonitoringAccess()
+        refreshPermissionStatus()
+        if !hasInputMonitoringPermission {
+            privacyPermissions.openSettings(for: .inputMonitoring)
+        }
     }
 
-    func openScreenRecordingSettings() {
-        openPrivacySettings(anchor: "Privacy_ScreenCapture")
+    func requestScreenRecordingPermission() async {
+        _ = privacyPermissions.requestScreenRecordingAccess()
+        refreshPermissionStatus()
+        if hasScreenRecordingPermission {
+            await refreshSources()
+        } else {
+            privacyPermissions.openSettings(for: .screenRecording)
+        }
     }
 
     func startRecording() async {
@@ -166,12 +180,6 @@ final class AppModel: ObservableObject {
         )
     }
 
-    private func openPrivacySettings(anchor: String) {
-        guard let url = URL(
-            string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)"
-        ) else { return }
-        NSWorkspace.shared.open(url)
-    }
 }
 
 struct PresentedError: Identifiable {
