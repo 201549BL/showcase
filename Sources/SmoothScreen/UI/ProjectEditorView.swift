@@ -405,6 +405,8 @@ struct ProjectEditorView: View {
 private struct PreviewFocusOverlay: View {
     @ObservedObject var model: EditorModel
     let zoom: ZoomSegment
+    @State private var pendingLocation: CGPoint?
+    @State private var showsConfirmation = false
 
     var body: some View {
         GeometryReader { proxy in
@@ -440,9 +442,21 @@ private struct PreviewFocusOverlay: View {
                 focusReticle
                     .position(x: contentRect.midX, y: contentRect.midY)
 
+                if let pendingLocation {
+                    pendingReticle
+                        .position(pendingLocation)
+                        .transition(.scale.combined(with: .opacity))
+                }
+
                 VStack {
-                    Text("Click or drag to the point this zoom should center on")
+                    Label(
+                        showsConfirmation
+                            ? "Focus updated for zoom at \(timeLabel(zoom.startTime))"
+                            : "Editing zoom at \(timeLabel(zoom.startTime)) — click or drag to choose its center",
+                        systemImage: showsConfirmation ? "checkmark.circle.fill" : "scope"
+                    )
                         .font(.caption.weight(.semibold))
+                        .foregroundStyle(showsConfirmation ? Color.green : Color.primary)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 7)
                         .background(.ultraThinMaterial, in: Capsule())
@@ -453,11 +467,23 @@ private struct PreviewFocusOverlay: View {
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        guard mapper.sourcePoint(for: value.location) != nil else { return }
+                        pendingLocation = value.location
+                        showsConfirmation = false
+                    }
                     .onEnded { value in
-                        guard let point = mapper.sourcePoint(for: value.location) else { return }
+                        guard let point = mapper.sourcePoint(for: value.location) else {
+                            pendingLocation = nil
+                            return
+                        }
                         model.setSelectedZoomFocus(point)
                         if let selected = model.selectedZoom {
                             model.seek(to: selected.focusTime)
+                        }
+                        withAnimation(.easeOut(duration: 0.16)) {
+                            pendingLocation = value.location
+                            showsConfirmation = true
                         }
                     }
             )
@@ -477,6 +503,25 @@ private struct PreviewFocusOverlay: View {
                 .frame(width: 36, height: 1)
         }
         .shadow(color: .black.opacity(0.8), radius: 2)
+    }
+
+    private var pendingReticle: some View {
+        ZStack {
+            Circle()
+                .fill(Color.accentColor.opacity(0.25))
+                .frame(width: 34, height: 34)
+            Circle()
+                .stroke(.white, lineWidth: 2)
+                .frame(width: 20, height: 20)
+            Circle()
+                .fill(.white)
+                .frame(width: 5, height: 5)
+        }
+        .shadow(color: .black.opacity(0.75), radius: 2)
+    }
+
+    private func timeLabel(_ seconds: Double) -> String {
+        String(format: "%02d:%02d", Int(seconds) / 60, Int(seconds) % 60)
     }
 }
 

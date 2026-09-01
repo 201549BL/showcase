@@ -25,6 +25,12 @@ struct TimelineGeometry: Equatable {
     }
 }
 
+enum TimelineBlockStacking {
+    static func zIndex(isSelected: Bool, order: Int) -> Double {
+        isSelected ? 10_000 : Double(order)
+    }
+}
+
 struct PreviewFocusMapper: Equatable {
     let viewSize: CGSize
     let canvasSize: CGSize

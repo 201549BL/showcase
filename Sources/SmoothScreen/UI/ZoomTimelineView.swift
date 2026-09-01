@@ -35,7 +35,7 @@ struct ZoomTimelineView: View {
                                 .allowsHitTesting(false)
                         }
 
-                        ForEach(model.project.zoomSegments) { zoom in
+                        ForEach(Array(model.project.zoomSegments.enumerated()), id: \.element.id) { order, zoom in
                             ZoomTimelineBlock(
                                 model: model,
                                 zoom: zoom,
@@ -47,9 +47,14 @@ struct ZoomTimelineView: View {
                                 height: 34
                             )
                             .offset(x: geometry.x(for: zoom.startTime), y: 17)
+                            .zIndex(TimelineBlockStacking.zIndex(
+                                isSelected: model.selectedZoomID == zoom.id,
+                                order: order
+                            ))
                         }
 
                         playhead(geometry: geometry)
+                            .zIndex(20_000)
                     }
                     .frame(height: 58)
                     .clipped()

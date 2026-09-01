@@ -38,6 +38,14 @@ struct EditorGeometryTests {
         #expect(mapper.sourcePoint(for: CGPoint(x: 250, y: 20)) == nil)
     }
 
+    @Test("Selected timeline block stays above overlapping neighbors")
+    func selectedTimelineBlockStacking() {
+        let selected = TimelineBlockStacking.zIndex(isSelected: true, order: 0)
+        let laterNeighbor = TimelineBlockStacking.zIndex(isSelected: false, order: 3)
+
+        #expect(selected > laterNeighbor)
+    }
+
     private func makeMapper(
         viewSize: CGSize = CGSize(width: 1_920, height: 1_080)
     ) -> PreviewFocusMapper {
