@@ -19,6 +19,7 @@ struct RecordedInputEvent: Codable, Equatable {
     let timestamp: Double
     let type: EventType
     let position: CodablePoint?
+    var sourceFrame: CodableRect? = nil
     let buttonNumber: Int64?
     let scrollDeltaX: Double?
     let scrollDeltaY: Double?

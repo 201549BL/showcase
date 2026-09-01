@@ -26,13 +26,18 @@ struct InputEventLocalizer {
         pixelWidth: Int,
         pixelHeight: Int
     ) -> [LocalizedInputEvent] {
-        let sourceFrame = source.frame.cgRect
-        let scaleX = sourceFrame.width > 0 ? Double(pixelWidth) / sourceFrame.width : source.scaleFactor
-        let scaleY = sourceFrame.height > 0 ? Double(pixelHeight) / sourceFrame.height : source.scaleFactor
+        let fallbackSourceFrame = source.frame.cgRect
         let pixelBounds = CGRect(x: 0, y: 0, width: pixelWidth, height: pixelHeight)
 
         return events.map { event in
             let localPosition = event.position.map { position -> CGPoint? in
+                let sourceFrame = event.sourceFrame?.cgRect ?? fallbackSourceFrame
+                let scaleX = sourceFrame.width > 0
+                    ? Double(pixelWidth) / sourceFrame.width
+                    : source.scaleFactor
+                let scaleY = sourceFrame.height > 0
+                    ? Double(pixelHeight) / sourceFrame.height
+                    : source.scaleFactor
                 let point = CGPoint(
                     x: (position.x - sourceFrame.minX) * scaleX,
                     y: (position.y - sourceFrame.minY) * scaleY

@@ -27,6 +27,61 @@ struct MotionTests {
         #expect(result[0].position == CGPoint(x: 400, y: 300))
     }
 
+    @Test("Localizes cursor coordinates after the captured window moves")
+    func localizesInputCoordinatesAfterWindowMoves() {
+        let source = CaptureSourceDescriptor(
+            kind: .window,
+            sourceID: 1,
+            title: "Window",
+            applicationName: "App",
+            frame: CodableRect(CGRect(x: 100, y: 50, width: 800, height: 600)),
+            scaleFactor: 2
+        )
+        let events = [inputEvent(
+            time: 5,
+            type: .mouseMoved,
+            point: CGPoint(x: 1_200, y: 250),
+            sourceFrame: CGRect(x: 1_000, y: 100, width: 800, height: 600)
+        )]
+
+        let result = InputEventLocalizer().localize(
+            events,
+            source: source,
+            pixelWidth: 1_600,
+            pixelHeight: 1_200
+        )
+
+        #expect(result[0].position == CGPoint(x: 400, y: 300))
+    }
+
+    @Test("Tracks live window bounds without looking them up for every event")
+    func tracksLiveWindowBoundsWithCaching() {
+        let source = CaptureSourceDescriptor(
+            kind: .window,
+            sourceID: 42,
+            title: "Window",
+            applicationName: "App",
+            frame: CodableRect(CGRect(x: 100, y: 50, width: 800, height: 600)),
+            scaleFactor: 2
+        )
+        var lookupCount = 0
+        var tracker = SourceFrameTracker(
+            source: source,
+            refreshInterval: 0.5,
+            windowFrameLookup: { windowID in
+                lookupCount += 1
+                #expect(windowID == 42)
+                return CGRect(x: 1_000, y: 100, width: 900, height: 700)
+            }
+        )
+
+        #expect(tracker.frame(at: 0) == CGRect(x: 1_000, y: 100, width: 900, height: 700))
+        #expect(tracker.frame(at: 0.1) == CGRect(x: 1_000, y: 100, width: 900, height: 700))
+        #expect(lookupCount == 1)
+        _ = tracker.frame(at: 0.5)
+        #expect(lookupCount == 2)
+    }
+
     @Test("Drops cursor coordinates outside the captured source")
     func removesOutsideCoordinates() {
         let source = captureSource(width: 800, height: 600)
@@ -242,12 +297,14 @@ struct MotionTests {
     private func inputEvent(
         time: Double,
         type: RecordedInputEvent.EventType,
-        point: CGPoint
+        point: CGPoint,
+        sourceFrame: CGRect? = nil
     ) -> RecordedInputEvent {
         RecordedInputEvent(
             timestamp: time,
             type: type,
             position: CodablePoint(point),
+            sourceFrame: sourceFrame.map(CodableRect.init),
             buttonNumber: nil,
             scrollDeltaX: nil,
             scrollDeltaY: nil,

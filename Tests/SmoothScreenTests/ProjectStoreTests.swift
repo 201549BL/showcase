@@ -93,4 +93,25 @@ struct ProjectStoreTests {
         #expect(savedProject == project)
         #expect(savedEvents == events)
     }
+
+    @Test("Reads input events recorded before live window bounds were added")
+    func readsLegacyInputEvents() throws {
+        let legacyJSON = """
+        [{
+          "timestamp": 1.25,
+          "type": "mouseMoved",
+          "position": {"x": 100, "y": 200},
+          "flags": 0
+        }]
+        """
+
+        let events = try JSONDecoder().decode(
+            [RecordedInputEvent].self,
+            from: Data(legacyJSON.utf8)
+        )
+
+        #expect(events.count == 1)
+        #expect(events[0].sourceFrame == nil)
+        #expect(events[0].position == CodablePoint(CGPoint(x: 100, y: 200)))
+    }
 }

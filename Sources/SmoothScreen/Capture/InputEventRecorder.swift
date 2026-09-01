@@ -20,6 +20,7 @@ final class InputEventRecorder {
     private let lock = NSLock()
     private var capturedEvents: [RecordedInputEvent] = []
     private var startTime: CMTime = .zero
+    private var sourceFrameTracker: SourceFrameTracker?
     private var runLoop: CFRunLoop?
     private var eventTap: CFMachPort?
     private var thread: Thread?
@@ -27,7 +28,11 @@ final class InputEventRecorder {
     private let finishedSemaphore = DispatchSemaphore(value: 0)
     private var startupError: Error?
 
-    func start(at startTime: CMTime, requestPermission: Bool = true) throws {
+    func start(
+        at startTime: CMTime,
+        source: CaptureSourceDescriptor,
+        requestPermission: Bool = true
+    ) throws {
         while finishedSemaphore.wait(timeout: .now()) == .success {}
         if requestPermission, !CGPreflightListenEventAccess() {
             guard CGRequestListenEventAccess() else {
@@ -38,6 +43,9 @@ final class InputEventRecorder {
         lock.withLock {
             capturedEvents.removeAll(keepingCapacity: true)
             self.startTime = startTime
+            sourceFrameTracker = source.kind == .window
+                ? SourceFrameTracker(source: source)
+                : nil
             startupError = nil
         }
 
@@ -128,11 +136,15 @@ final class InputEventRecorder {
         let hasPosition = type != .keyDown && type != .keyUp && type != .flagsChanged
         let isScroll = type == .scrollWheel
         let isKey = type == .keyDown || type == .keyUp
+        let sourceFrame = hasPosition
+            ? lock.withLock { sourceFrameTracker?.frame(at: timestamp) }
+            : nil
 
         let recorded = RecordedInputEvent(
             timestamp: timestamp,
             type: recordedType,
             position: hasPosition ? CodablePoint(event.location) : nil,
+            sourceFrame: sourceFrame.map(CodableRect.init),
             buttonNumber: hasPosition && !isScroll
                 ? event.getIntegerValueField(.mouseEventButtonNumber)
                 : nil,
@@ -155,6 +167,55 @@ final class InputEventRecorder {
         types.reduce(CGEventMask(0)) { mask, type in
             mask | (CGEventMask(1) << type.rawValue)
         }
+    }
+}
+
+struct SourceFrameTracker {
+    typealias WindowFrameLookup = (CGWindowID) -> CGRect?
+
+    private let source: CaptureSourceDescriptor
+    private let refreshInterval: Double
+    private let windowFrameLookup: WindowFrameLookup
+    private var cachedFrame: CGRect
+    private var lastRefreshTime = -Double.infinity
+
+    init(
+        source: CaptureSourceDescriptor,
+        refreshInterval: Double = 1.0 / 30.0,
+        windowFrameLookup: @escaping WindowFrameLookup = SourceFrameTracker.liveWindowFrame
+    ) {
+        self.source = source
+        self.refreshInterval = refreshInterval
+        self.windowFrameLookup = windowFrameLookup
+        cachedFrame = source.frame.cgRect
+    }
+
+    mutating func frame(at timestamp: Double) -> CGRect {
+        guard source.kind == .window else { return cachedFrame }
+        guard timestamp - lastRefreshTime >= refreshInterval else { return cachedFrame }
+
+        lastRefreshTime = timestamp
+        if let currentFrame = windowFrameLookup(CGWindowID(source.sourceID)),
+           currentFrame.width > 0,
+           currentFrame.height > 0 {
+            cachedFrame = currentFrame
+        }
+        return cachedFrame
+    }
+
+    private static func liveWindowFrame(_ windowID: CGWindowID) -> CGRect? {
+        guard
+            let rawWindowInfo = CGWindowListCopyWindowInfo(
+                [.optionIncludingWindow],
+                windowID
+            ) as? [[CFString: Any]],
+            let windowInfo = rawWindowInfo.first,
+            let bounds = windowInfo[kCGWindowBounds] as? NSDictionary
+        else {
+            return nil
+        }
+
+        return CGRect(dictionaryRepresentation: bounds)
     }
 }
 

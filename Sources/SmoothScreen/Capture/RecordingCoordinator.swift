@@ -57,7 +57,7 @@ final class RecordingCoordinator {
 
         let startTime = CMClockGetTime(CMClockGetHostTimeClock())
         do {
-            try inputRecorder.start(at: startTime)
+            try inputRecorder.start(at: startTime, source: descriptor)
             try await screenRecorder.start(
                 source: resolvedSource,
                 descriptor: descriptor,
