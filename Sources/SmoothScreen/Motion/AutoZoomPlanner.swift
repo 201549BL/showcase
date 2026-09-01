@@ -8,8 +8,8 @@ struct AutoZoomPlanner {
         var zoomInDuration = 0.4
         var holdAfterLastClick = 0.9
         var zoomOutDuration = 0.5
-        var mergeTimeInterval = 1.5
-        var mergeDistanceFraction = 0.18
+        var interactionRunInterval = 1.6
+        var overviewPaddingFraction = 0.12
         var endExclusionDuration = 0.45
     }
 
@@ -36,16 +36,13 @@ struct AutoZoomPlanner {
 
         guard !clicks.isEmpty else { return [] }
 
-        let mergeDistance = max(sourceSize.width, sourceSize.height)
-            * configuration.mergeDistanceFraction
         var groups: [[Click]] = []
 
         for click in clicks {
             if
                 var group = groups.last,
                 let previous = group.last,
-                click.timestamp - previous.timestamp <= configuration.mergeTimeInterval,
-                click.position.distance(to: previous.position) <= mergeDistance
+                click.timestamp - previous.timestamp <= configuration.interactionRunInterval
             {
                 group.append(click)
                 groups[groups.count - 1] = group
@@ -57,11 +54,15 @@ struct AutoZoomPlanner {
         return groups.compactMap { group in
             guard let first = group.first, let last = group.last else { return nil }
 
-            let target = weightedFocusPoint(group.map(\.position))
+            let points = group.map(\.position)
+            let scale = framingScale(points: points, sourceSize: sourceSize)
+            let target = scale < configuration.scale - 0.001
+                ? boundingCenter(points)
+                : weightedFocusPoint(points)
             let clampedTarget = clampedFocus(
                 target,
                 sourceSize: sourceSize,
-                scale: configuration.scale
+                scale: scale
             )
             let start = max(0, first.timestamp - configuration.leadTime)
             let focus = min(duration, first.timestamp + configuration.zoomInDuration)
@@ -77,10 +78,49 @@ struct AutoZoomPlanner {
                 focusTime: max(start, focus),
                 endTime: max(focus, end),
                 focusPoint: CodablePoint(clampedTarget),
-                scale: configuration.scale,
+                scale: scale,
                 source: .automatic
             )
         }
+    }
+
+    private func framingScale(points: [CGPoint], sourceSize: CGSize) -> Double {
+        guard let first = points.first else { return 1 }
+
+        var minX = first.x
+        var maxX = first.x
+        var minY = first.y
+        var maxY = first.y
+        for point in points.dropFirst() {
+            minX = min(minX, point.x)
+            maxX = max(maxX, point.x)
+            minY = min(minY, point.y)
+            maxY = max(maxY, point.y)
+        }
+
+        let paddedWidth = (maxX - minX)
+            + (2 * sourceSize.width * configuration.overviewPaddingFraction)
+        let paddedHeight = (maxY - minY)
+            + (2 * sourceSize.height * configuration.overviewPaddingFraction)
+        let widthScale = sourceSize.width / max(1, paddedWidth)
+        let heightScale = sourceSize.height / max(1, paddedHeight)
+        return max(1, min(configuration.scale, widthScale, heightScale))
+    }
+
+    private func boundingCenter(_ points: [CGPoint]) -> CGPoint {
+        guard let first = points.first else { return .zero }
+
+        var minX = first.x
+        var maxX = first.x
+        var minY = first.y
+        var maxY = first.y
+        for point in points.dropFirst() {
+            minX = min(minX, point.x)
+            maxX = max(maxX, point.x)
+            minY = min(minY, point.y)
+            maxY = max(maxY, point.y)
+        }
+        return CGPoint(x: (minX + maxX) / 2, y: (minY + maxY) / 2)
     }
 
     private func weightedFocusPoint(_ points: [CGPoint]) -> CGPoint {

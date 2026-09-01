@@ -162,6 +162,26 @@ struct MotionTests {
         #expect(segments.count == 1)
     }
 
+    @Test("Rapid far-apart clicks become one stable overview shot")
+    func rapidClicksUseOverviewShot() {
+        let events = [
+            localized(time: 1, type: .leftMouseDown, x: 200, y: 200),
+            localized(time: 1.7, type: .leftMouseDown, x: 1_400, y: 700),
+            localized(time: 2.4, type: .leftMouseDown, x: 200, y: 200),
+            localized(time: 3.1, type: .leftMouseDown, x: 1_400, y: 700)
+        ]
+
+        let segments = AutoZoomPlanner().plan(
+            events: events,
+            sourceSize: CGSize(width: 1_600, height: 900),
+            duration: 5
+        )
+
+        #expect(segments.count == 1)
+        #expect(segments[0].scale < 1.3)
+        #expect(segments[0].focusPoint.cgPoint == CGPoint(x: 800, y: 450))
+    }
+
     @Test("Zoom focus is clamped away from source edges")
     func clampsZoomFocus() {
         let segments = AutoZoomPlanner().plan(
