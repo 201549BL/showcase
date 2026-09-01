@@ -11,6 +11,7 @@ struct SmoothScreenApp: App {
         }
         .windowStyle(.titleBar)
         .commands {
+            EditorUndoCommands()
             CommandGroup(after: .newItem) {
                 Button("Refresh Sources") {
                     Task { await model.refreshSources() }

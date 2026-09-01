@@ -12,6 +12,8 @@ final class EditorModel: ObservableObject {
     @Published var presentedError: PresentedError?
     @Published var selectedZoomID: UUID?
     @Published private(set) var playheadTime = 0.0
+    @Published private(set) var undoActionName: String?
+    @Published private(set) var redoActionName: String?
 
     let projectURL: URL
     let player = AVPlayer()
@@ -22,6 +24,7 @@ final class EditorModel: ObservableObject {
     private let exporter: VideoExporter
     private var previewRefreshTask: Task<Void, Never>?
     private var timeObserver: Any?
+    private var history = EditorHistory<EditorSnapshot>()
 
     init(
         projectURL: URL,
@@ -85,15 +88,30 @@ final class EditorModel: ObservableObject {
         return project.zoomSegments.first { $0.id == selectedZoomID }
     }
 
+    var canUndo: Bool { undoActionName != nil }
+    var canRedo: Bool { redoActionName != nil }
+
     func setTrimStart(_ value: Double) {
-        if project.timeline == nil { project.timeline = .default }
-        project.timeline?.trimStart = min(max(0, value), trimEnd - 0.1)
-        projectDidChange()
+        let latestStart = trimEnd - 0.1
+        editProject(actionName: "Trim Start") { project in
+            if project.timeline == nil { project.timeline = .default }
+            project.timeline?.trimStart = min(max(0, value), latestStart)
+        }
     }
 
     func setTrimEnd(_ value: Double) {
-        if project.timeline == nil { project.timeline = .default }
-        project.timeline?.trimEnd = max(trimStart + 0.1, min(recordingDuration, value))
+        let earliestEnd = trimStart + 0.1
+        let duration = recordingDuration
+        editProject(actionName: "Trim End") { project in
+            if project.timeline == nil { project.timeline = .default }
+            project.timeline?.trimEnd = max(earliestEnd, min(duration, value))
+        }
+    }
+
+    func setQuality(_ value: ExportQuality) {
+        performHistoryEdit(actionName: "Change Quality") {
+            quality = value
+        }
         projectDidChange()
     }
 
@@ -121,8 +139,12 @@ final class EditorModel: ObservableObject {
             sourceSize: CGSize(width: project.recording.width, height: project.recording.height),
             duration: project.recording.duration ?? 0
         )
-        project.zoomSegments = (automatic + manual).sorted { $0.startTime < $1.startTime }
-        projectDidChange()
+        editProject(actionName: "Regenerate Zooms") { project in
+            project.zoomSegments = (automatic + manual).sorted { $0.startTime < $1.startTime }
+        }
+        if selectedZoom == nil {
+            selectedZoomID = project.zoomSegments.first?.id
+        }
     }
 
     func addManualZoom() {
@@ -144,17 +166,19 @@ final class EditorModel: ObservableObject {
             scale: 1.6,
             source: .manual
         )
-        project.zoomSegments.append(segment)
-        project.zoomSegments.sort { $0.startTime < $1.startTime }
+        editProject(actionName: "Add Zoom") { project in
+            project.zoomSegments.append(segment)
+            project.zoomSegments.sort { $0.startTime < $1.startTime }
+        }
         selectedZoomID = segment.id
         seek(to: segment.focusTime)
-        projectDidChange()
     }
 
     func deleteZoom(id: UUID) {
-        project.zoomSegments.removeAll { $0.id == id }
+        editProject(actionName: "Delete Zoom") { project in
+            project.zoomSegments.removeAll { $0.id == id }
+        }
         if selectedZoomID == id { selectedZoomID = nil }
-        projectDidChange()
     }
 
     func selectZoom(id: UUID, seekToFocus: Bool = true) {
@@ -213,6 +237,7 @@ final class EditorModel: ObservableObject {
     func commitTimelineEdit() {
         project.zoomSegments.sort { $0.startTime < $1.startTime }
         projectDidChange()
+        commitHistoryTransaction()
     }
 
     func setSelectedZoomFocus(_ point: CGPoint) {
@@ -224,17 +249,55 @@ final class EditorModel: ObservableObject {
         let scale = max(1, project.zoomSegments[index].scale)
         let halfWidth = Double(project.recording.width) / (2 * scale)
         let halfHeight = Double(project.recording.height) / (2 * scale)
-        project.zoomSegments[index].focusPoint = CodablePoint(CGPoint(
-            x: min(Double(project.recording.width) - halfWidth, max(halfWidth, point.x)),
-            y: min(Double(project.recording.height) - halfHeight, max(halfHeight, point.y))
-        ))
-        projectDidChange()
+        editProject(actionName: "Set Zoom Focus") { project in
+            project.zoomSegments[index].focusPoint = CodablePoint(CGPoint(
+                x: min(Double(project.recording.width) - halfWidth, max(halfWidth, point.x)),
+                y: min(Double(project.recording.height) - halfHeight, max(halfHeight, point.y))
+            ))
+        }
     }
 
     func applyBackground(_ preset: BackgroundPreset) {
-        project.canvas.backgroundStartHex = preset.startHex
-        project.canvas.backgroundEndHex = preset.endHex
-        projectDidChange()
+        editProject(actionName: "Change Background") { project in
+            project.canvas.backgroundStartHex = preset.startHex
+            project.canvas.backgroundEndHex = preset.endHex
+        }
+    }
+
+    func beginHistoryTransaction(actionName: String) {
+        history.begin(snapshot: historySnapshot, actionName: actionName)
+    }
+
+    func commitHistoryTransaction() {
+        history.commit(current: historySnapshot)
+        syncHistoryState()
+    }
+
+    func editProject(
+        actionName: String,
+        rebuildPreview: Bool = true,
+        _ edit: (inout RecordingProject) -> Void
+    ) {
+        performHistoryEdit(actionName: actionName) {
+            edit(&project)
+        }
+        projectDidChange(rebuildPreview: rebuildPreview)
+    }
+
+    func undo() {
+        if history.hasActiveTransaction {
+            commitHistoryTransaction()
+        }
+        guard let snapshot = history.undo(current: historySnapshot) else { return }
+        restore(snapshot)
+    }
+
+    func redo() {
+        if history.hasActiveTransaction {
+            commitHistoryTransaction()
+        }
+        guard let snapshot = history.redo(current: historySnapshot) else { return }
+        restore(snapshot)
     }
 
     func exportVideo() async {
@@ -305,6 +368,43 @@ final class EditorModel: ObservableObject {
             message: (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         )
     }
+
+    private var historySnapshot: EditorSnapshot {
+        EditorSnapshot(project: project, quality: quality)
+    }
+
+    private func performHistoryEdit(actionName: String, edit: () -> Void) {
+        let ownsTransaction = !history.hasActiveTransaction
+        if ownsTransaction {
+            beginHistoryTransaction(actionName: actionName)
+        }
+        edit()
+        if ownsTransaction {
+            commitHistoryTransaction()
+        }
+    }
+
+    private func restore(_ snapshot: EditorSnapshot) {
+        project = snapshot.project
+        quality = snapshot.quality
+        if let selectedZoomID, !project.zoomSegments.contains(where: { $0.id == selectedZoomID }) {
+            self.selectedZoomID = project.zoomSegments.first?.id
+        } else if selectedZoomID == nil {
+            selectedZoomID = project.zoomSegments.first?.id
+        }
+        syncHistoryState()
+        projectDidChange()
+    }
+
+    private func syncHistoryState() {
+        undoActionName = history.undoActionName
+        redoActionName = history.redoActionName
+    }
+}
+
+private struct EditorSnapshot: Equatable {
+    let project: RecordingProject
+    let quality: ExportQuality
 }
 
 enum BackgroundPreset: String, CaseIterable, Identifiable {

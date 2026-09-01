@@ -19,6 +19,23 @@ struct ProjectEditorView: View {
                     Label("New Recording", systemImage: "chevron.left")
                 }
             }
+            ToolbarItemGroup(placement: .automatic) {
+                Button {
+                    model.undo()
+                } label: {
+                    Label("Undo", systemImage: "arrow.uturn.backward")
+                }
+                .disabled(!model.canUndo)
+                .help(model.undoActionName.map { "Undo \($0) (⌘Z)" } ?? "Nothing to undo")
+
+                Button {
+                    model.redo()
+                } label: {
+                    Label("Redo", systemImage: "arrow.uturn.forward")
+                }
+                .disabled(!model.canRedo)
+                .help(model.redoActionName.map { "Redo \($0) (⇧⌘Z)" } ?? "Nothing to redo")
+            }
             ToolbarItemGroup(placement: .primaryAction) {
                 Button {
                     model.revealProject()
@@ -52,6 +69,15 @@ struct ProjectEditorView: View {
                 isEditingFocus = false
             }
         }
+        .focusedSceneValue(
+            \.editorHistoryActions,
+            EditorHistoryActions(
+                undoActionName: model.undoActionName,
+                redoActionName: model.redoActionName,
+                undo: model.undo,
+                redo: model.redo
+            )
+        )
     }
 
     private var previewPane: some View {
@@ -155,31 +181,35 @@ struct ProjectEditorView: View {
 
     private var outputSection: some View {
         editorSection("Output") {
-            Picker("Format", selection: binding(\.canvas.aspectRatio)) {
+            Picker(
+                "Format",
+                selection: binding(\.canvas.aspectRatio, actionName: "Change Format")
+            ) {
                 ForEach(CanvasSettings.AspectRatio.allCases, id: \.self) { ratio in
                     Text(aspectName(ratio)).tag(ratio)
                 }
             }
             .pickerStyle(.segmented)
 
-            Picker("Quality", selection: $model.quality) {
+            Picker(
+                "Quality",
+                selection: Binding(get: { model.quality }, set: model.setQuality)
+            ) {
                 ForEach(ExportQuality.allCases) { quality in
                     Text(quality.displayName).tag(quality)
                 }
             }
-            .onChange(of: model.quality) {
-                model.projectDidChange()
-            }
-
             slider(
                 "Trim start",
                 value: Binding(get: { model.trimStart }, set: model.setTrimStart),
-                range: 0...max(0.1, model.recordingDuration - 0.1)
+                range: 0...max(0.1, model.recordingDuration - 0.1),
+                actionName: "Trim Start"
             )
             slider(
                 "Trim end",
                 value: Binding(get: { model.trimEnd }, set: model.setTrimEnd),
-                range: 0.1...model.recordingDuration
+                range: 0.1...model.recordingDuration,
+                actionName: "Trim End"
             )
         }
     }
@@ -205,18 +235,51 @@ struct ProjectEditorView: View {
                 }
             }
 
-            slider("Padding", value: binding(\.canvas.padding), range: 0...160)
-            slider("Corners", value: binding(\.canvas.cornerRadius), range: 0...48)
-            slider("Shadow", value: binding(\.canvas.shadowRadius), range: 0...60)
+            slider(
+                "Padding",
+                value: binding(\.canvas.padding, actionName: "Change Padding"),
+                range: 0...160,
+                actionName: "Change Padding"
+            )
+            slider(
+                "Corners",
+                value: binding(\.canvas.cornerRadius, actionName: "Change Corners"),
+                range: 0...48,
+                actionName: "Change Corners"
+            )
+            slider(
+                "Shadow",
+                value: binding(\.canvas.shadowRadius, actionName: "Change Shadow"),
+                range: 0...60,
+                actionName: "Change Shadow"
+            )
         }
     }
 
     private var cursorSection: some View {
         editorSection("Cursor") {
-            slider("Size", value: binding(\.cursor.scale), range: 0.75...2.5)
-            slider("Smoothing", value: binding(\.cursor.smoothing), range: 0...1)
-            slider("Hide after", value: binding(\.cursor.hideAfter), range: 0.5...5)
-            Toggle("Click animation", isOn: binding(\.cursor.showsClickAnimation))
+            slider(
+                "Size",
+                value: binding(\.cursor.scale, actionName: "Change Cursor Size"),
+                range: 0.75...2.5,
+                actionName: "Change Cursor Size"
+            )
+            slider(
+                "Smoothing",
+                value: binding(\.cursor.smoothing, actionName: "Change Cursor Smoothing"),
+                range: 0...1,
+                actionName: "Change Cursor Smoothing"
+            )
+            slider(
+                "Hide after",
+                value: binding(\.cursor.hideAfter, actionName: "Change Cursor Visibility"),
+                range: 0.5...5,
+                actionName: "Change Cursor Visibility"
+            )
+            Toggle(
+                "Click animation",
+                isOn: binding(\.cursor.showsClickAnimation, actionName: "Toggle Click Animation")
+            )
         }
     }
 
@@ -254,27 +317,32 @@ struct ProjectEditorView: View {
                         slider(
                             "Scale",
                             value: zoomScaleBinding(index: index),
-                            range: 1.1...2.5
+                            range: 1.1...2.5,
+                            actionName: "Change Zoom Scale"
                         )
                         slider(
                             "Focus X",
                             value: zoomBinding(index: index, keyPath: \.focusPoint.x),
-                            range: 0...Double(model.project.recording.width)
+                            range: 0...Double(model.project.recording.width),
+                            actionName: "Change Zoom Focus"
                         )
                         slider(
                             "Focus Y",
                             value: zoomBinding(index: index, keyPath: \.focusPoint.y),
-                            range: 0...Double(model.project.recording.height)
+                            range: 0...Double(model.project.recording.height),
+                            actionName: "Change Zoom Focus"
                         )
                         slider(
                             "Start",
                             value: zoomBinding(index: index, keyPath: \.startTime),
-                            range: 0...model.recordingDuration
+                            range: 0...model.recordingDuration,
+                            actionName: "Change Zoom Start"
                         )
                         slider(
                             "End",
                             value: zoomBinding(index: index, keyPath: \.endTime),
-                            range: 0...model.recordingDuration
+                            range: 0...model.recordingDuration,
+                            actionName: "Change Zoom End"
                         )
                     }
                     .padding(10)
@@ -305,7 +373,8 @@ struct ProjectEditorView: View {
     private func slider(
         _ title: String,
         value: Binding<Double>,
-        range: ClosedRange<Double>
+        range: ClosedRange<Double>,
+        actionName: String
     ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
@@ -317,16 +386,26 @@ struct ProjectEditorView: View {
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.tertiary)
             }
-            Slider(value: value, in: range)
+            Slider(value: value, in: range) { isEditing in
+                if isEditing {
+                    model.beginHistoryTransaction(actionName: actionName)
+                } else {
+                    model.commitHistoryTransaction()
+                }
+            }
         }
     }
 
-    private func binding<Value>(_ keyPath: WritableKeyPath<RecordingProject, Value>) -> Binding<Value> {
+    private func binding<Value>(
+        _ keyPath: WritableKeyPath<RecordingProject, Value>,
+        actionName: String
+    ) -> Binding<Value> {
         Binding(
             get: { model.project[keyPath: keyPath] },
             set: { value in
-                model.project[keyPath: keyPath] = value
-                model.projectDidChange()
+                model.editProject(actionName: actionName) { project in
+                    project[keyPath: keyPath] = value
+                }
             }
         )
     }
@@ -335,9 +414,10 @@ struct ProjectEditorView: View {
         Binding(
             get: { model.project.zoomSegments[index].scale },
             set: { value in
-                guard model.project.zoomSegments.indices.contains(index) else { return }
-                model.project.zoomSegments[index].scale = value
-                model.projectDidChange()
+                model.editProject(actionName: "Change Zoom Scale") { project in
+                    guard project.zoomSegments.indices.contains(index) else { return }
+                    project.zoomSegments[index].scale = value
+                }
             }
         )
     }
@@ -349,27 +429,34 @@ struct ProjectEditorView: View {
         Binding(
             get: { model.project.zoomSegments[index][keyPath: keyPath] },
             set: { value in
-                guard model.project.zoomSegments.indices.contains(index) else { return }
-                if keyPath == \.startTime {
-                    let latestStart = max(0, model.project.zoomSegments[index].endTime - 0.1)
-                    model.project.zoomSegments[index].startTime = min(value, latestStart)
-                    model.project.zoomSegments[index].focusTime = max(
-                        model.project.zoomSegments[index].startTime,
-                        model.project.zoomSegments[index].focusTime
-                    )
-                } else if keyPath == \.endTime {
-                    let earliestEnd = model.project.zoomSegments[index].startTime + 0.1
-                    model.project.zoomSegments[index].endTime = max(value, earliestEnd)
-                    model.project.zoomSegments[index].focusTime = min(
-                        model.project.zoomSegments[index].endTime,
-                        model.project.zoomSegments[index].focusTime
-                    )
-                } else {
-                    model.project.zoomSegments[index][keyPath: keyPath] = value
+                model.editProject(actionName: zoomActionName(keyPath)) { project in
+                    guard project.zoomSegments.indices.contains(index) else { return }
+                    if keyPath == \.startTime {
+                        let latestStart = max(0, project.zoomSegments[index].endTime - 0.1)
+                        project.zoomSegments[index].startTime = min(value, latestStart)
+                        project.zoomSegments[index].focusTime = max(
+                            project.zoomSegments[index].startTime,
+                            project.zoomSegments[index].focusTime
+                        )
+                    } else if keyPath == \.endTime {
+                        let earliestEnd = project.zoomSegments[index].startTime + 0.1
+                        project.zoomSegments[index].endTime = max(value, earliestEnd)
+                        project.zoomSegments[index].focusTime = min(
+                            project.zoomSegments[index].endTime,
+                            project.zoomSegments[index].focusTime
+                        )
+                    } else {
+                        project.zoomSegments[index][keyPath: keyPath] = value
+                    }
                 }
-                model.projectDidChange()
             }
         )
+    }
+
+    private func zoomActionName(_ keyPath: WritableKeyPath<ZoomSegment, Double>) -> String {
+        if keyPath == \.startTime { return "Change Zoom Start" }
+        if keyPath == \.endTime { return "Change Zoom End" }
+        return "Change Zoom Focus"
     }
 
     private func aspectName(_ ratio: CanvasSettings.AspectRatio) -> String {

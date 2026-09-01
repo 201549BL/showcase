@@ -197,6 +197,7 @@ private struct ZoomTimelineBlock: View {
         )
             .onChanged { value in
                 if moveProjection == nil {
+                    model.beginHistoryTransaction(actionName: "Move Zoom")
                     moveProjection = TimelineDragProjection(
                         initialTime: zoom.startTime,
                         pointerStartX: value.startLocation.x,
@@ -223,6 +224,7 @@ private struct ZoomTimelineBlock: View {
         )
             .onChanged { value in
                 if startProjection == nil {
+                    model.beginHistoryTransaction(actionName: "Resize Zoom")
                     startProjection = TimelineDragProjection(
                         initialTime: zoom.startTime,
                         pointerStartX: value.startLocation.x,
@@ -249,6 +251,7 @@ private struct ZoomTimelineBlock: View {
         )
             .onChanged { value in
                 if endProjection == nil {
+                    model.beginHistoryTransaction(actionName: "Resize Zoom")
                     endProjection = TimelineDragProjection(
                         initialTime: zoom.endTime,
                         pointerStartX: value.startLocation.x,

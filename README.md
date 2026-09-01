@@ -15,6 +15,7 @@ The usable V1 includes:
 - Live composed preview with background, framing, cursor, and zoom controls
 - Visual click/zoom timeline with seeking, moving, and edge resizing
 - Direct focus editing by clicking or dragging on the video preview
+- Undo and redo for timeline, focus, zoom, trim, canvas, and cursor edits
 - Landscape, square, vertical, and source-aspect exports
 - Beginning/end trimming and 1080p or 4K MP4 export
 
@@ -47,6 +48,7 @@ Open a `.screenproject` and use the timeline below the preview to edit the camer
 - Orange marks show recorded clicks.
 - Choose **Set Focus**, then click or drag to a point in the preview to center the selected zoom there.
 - **Add Zoom Here** creates a manual zoom at the playhead; **Regenerate** rebuilds automatic zooms from recorded clicks.
+- Use **Command-Z** to undo and **Shift-Command-Z** to redo. Slider drags and timeline drags each count as one edit.
 
 ## Project layout
 
