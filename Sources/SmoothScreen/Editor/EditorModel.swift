@@ -88,6 +88,10 @@ final class EditorModel: ObservableObject {
         return project.zoomSegments.first { $0.id == selectedZoomID }
     }
 
+    var zoomBehavior: ZoomBehaviorSettings {
+        project.resolvedZoomBehavior
+    }
+
     var canUndo: Bool { undoActionName != nil }
     var canRedo: Bool { redoActionName != nil }
 
@@ -134,16 +138,38 @@ final class EditorModel: ObservableObject {
 
     func regenerateAutomaticZooms() {
         let manual = project.zoomSegments.filter { $0.source == .manual }
-        let automatic = AutoZoomPlanner().plan(
-            events: localizedEvents,
-            sourceSize: CGSize(width: project.recording.width, height: project.recording.height),
-            duration: project.recording.duration ?? 0
-        )
+        let automatic = plannedAutomaticZooms(settings: zoomBehavior)
         editProject(actionName: "Regenerate Zooms") { project in
             project.zoomSegments = (automatic + manual).sorted { $0.startTime < $1.startTime }
         }
         if selectedZoom == nil {
             selectedZoomID = project.zoomSegments.first?.id
+        }
+    }
+
+    func applyZoomPreset(_ preset: ZoomBehaviorSettings.Preset) {
+        let settings = zoomBehavior.applying(preset)
+        let manual = project.zoomSegments.filter { $0.source == .manual }
+        let automatic = plannedAutomaticZooms(settings: settings)
+        editProject(actionName: "Apply \(preset.displayName) Zooms") { project in
+            project.zoomBehavior = settings
+            project.zoomSegments = (automatic + manual).sorted { $0.startTime < $1.startTime }
+        }
+        if selectedZoom == nil {
+            selectedZoomID = project.zoomSegments.first?.id
+        }
+    }
+
+    func updateCustomZoomBehavior(
+        _ keyPath: WritableKeyPath<ZoomBehaviorSettings, Double>,
+        value: Double,
+        actionName: String
+    ) {
+        editProject(actionName: actionName, rebuildPreview: false) { project in
+            var settings = project.resolvedZoomBehavior
+            settings.preset = .custom
+            settings[keyPath: keyPath] = value
+            project.zoomBehavior = settings
         }
     }
 
@@ -366,6 +392,15 @@ final class EditorModel: ObservableObject {
     private func present(_ error: Error) {
         presentedError = PresentedError(
             message: (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        )
+    }
+
+    private func plannedAutomaticZooms(settings: ZoomBehaviorSettings) -> [ZoomSegment] {
+        guard settings.preset != .off else { return [] }
+        return AutoZoomPlanner(settings: settings).plan(
+            events: localizedEvents,
+            sourceSize: CGSize(width: project.recording.width, height: project.recording.height),
+            duration: project.recording.duration ?? 0
         )
     }
 

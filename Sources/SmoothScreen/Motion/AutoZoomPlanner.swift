@@ -15,6 +15,23 @@ struct AutoZoomPlanner {
 
     var configuration = Configuration()
 
+    init(configuration: Configuration = Configuration()) {
+        self.configuration = configuration
+    }
+
+    init(settings: ZoomBehaviorSettings) {
+        configuration = Configuration(
+            scale: settings.scale,
+            leadTime: min(0.25, settings.transitionDuration * 0.4),
+            zoomInDuration: settings.transitionDuration,
+            holdAfterLastClick: settings.holdDuration,
+            zoomOutDuration: settings.transitionDuration,
+            interactionRunInterval: settings.groupingInterval,
+            overviewPaddingFraction: settings.overviewPaddingFraction,
+            endExclusionDuration: 0.45
+        )
+    }
+
     func plan(
         events: [LocalizedInputEvent],
         sourceSize: CGSize,
@@ -79,7 +96,8 @@ struct AutoZoomPlanner {
                 endTime: max(focus, end),
                 focusPoint: CodablePoint(clampedTarget),
                 scale: scale,
-                source: .automatic
+                source: .automatic,
+                transitionDuration: configuration.zoomOutDuration
             )
         }
     }

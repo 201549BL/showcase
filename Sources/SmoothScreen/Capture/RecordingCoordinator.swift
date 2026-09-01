@@ -105,14 +105,17 @@ final class RecordingCoordinator {
             pixelWidth: project.recording.width,
             pixelHeight: project.recording.height
         )
-        project.zoomSegments = AutoZoomPlanner().plan(
-            events: localizedEvents,
-            sourceSize: CGSize(
-                width: project.recording.width,
-                height: project.recording.height
-            ),
-            duration: duration
-        )
+        let zoomBehavior = project.resolvedZoomBehavior
+        project.zoomSegments = zoomBehavior.preset == .off
+            ? []
+            : AutoZoomPlanner(settings: zoomBehavior).plan(
+                events: localizedEvents,
+                sourceSize: CGSize(
+                    width: project.recording.width,
+                    height: project.recording.height
+                ),
+                duration: duration
+            )
         try projectStore.save(events: events, to: locations)
         try projectStore.save(project, to: locations)
 

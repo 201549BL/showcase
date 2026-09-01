@@ -12,6 +12,7 @@ struct RecordingProject: Codable, Equatable {
     var canvas: CanvasSettings
     var cursor: CursorSettings
     var zoomSegments: [ZoomSegment]
+    var zoomBehavior: ZoomBehaviorSettings?
     var timeline: TimelineSettings?
 
     init(
@@ -21,6 +22,7 @@ struct RecordingProject: Codable, Equatable {
         canvas: CanvasSettings = .default,
         cursor: CursorSettings = .default,
         zoomSegments: [ZoomSegment] = [],
+        zoomBehavior: ZoomBehaviorSettings = .calm,
         timeline: TimelineSettings = .default
     ) {
         version = Self.currentVersion
@@ -30,7 +32,12 @@ struct RecordingProject: Codable, Equatable {
         self.canvas = canvas
         self.cursor = cursor
         self.zoomSegments = zoomSegments
+        self.zoomBehavior = zoomBehavior
         self.timeline = timeline
+    }
+
+    var resolvedZoomBehavior: ZoomBehaviorSettings {
+        zoomBehavior ?? .legacy
     }
 }
 
@@ -145,6 +152,70 @@ struct TimelineSettings: Codable, Equatable {
     static let `default` = TimelineSettings(trimStart: 0, trimEnd: nil)
 }
 
+struct ZoomBehaviorSettings: Codable, Equatable {
+    enum Preset: String, Codable, CaseIterable, Identifiable {
+        case calm
+        case focused
+        case off
+        case custom
+
+        var id: String { rawValue }
+
+        var displayName: String { rawValue.capitalized }
+    }
+
+    var preset: Preset
+    var scale: Double
+    var transitionDuration: Double
+    var holdDuration: Double
+    var groupingInterval: Double
+    var overviewPaddingFraction: Double
+
+    static let calm = ZoomBehaviorSettings(
+        preset: .calm,
+        scale: 1.4,
+        transitionDuration: 0.65,
+        holdDuration: 1.3,
+        groupingInterval: 2.4,
+        overviewPaddingFraction: 0.18
+    )
+
+    static let focused = ZoomBehaviorSettings(
+        preset: .focused,
+        scale: 1.75,
+        transitionDuration: 0.35,
+        holdDuration: 0.75,
+        groupingInterval: 1.2,
+        overviewPaddingFraction: 0.1
+    )
+
+    static let legacy = ZoomBehaviorSettings(
+        preset: .custom,
+        scale: 1.6,
+        transitionDuration: 0.4,
+        holdDuration: 0.9,
+        groupingInterval: 1.6,
+        overviewPaddingFraction: 0.12
+    )
+
+    func applying(_ preset: Preset) -> ZoomBehaviorSettings {
+        switch preset {
+        case .calm:
+            return .calm
+        case .focused:
+            return .focused
+        case .off:
+            var settings = self
+            settings.preset = .off
+            return settings
+        case .custom:
+            var settings = self
+            settings.preset = .custom
+            return settings
+        }
+    }
+}
+
 struct ZoomSegment: Codable, Equatable, Identifiable {
     enum Source: String, Codable {
         case automatic
@@ -158,4 +229,25 @@ struct ZoomSegment: Codable, Equatable, Identifiable {
     var focusPoint: CodablePoint
     var scale: Double
     var source: Source
+    var transitionDuration: Double?
+
+    init(
+        id: UUID,
+        startTime: Double,
+        focusTime: Double,
+        endTime: Double,
+        focusPoint: CodablePoint,
+        scale: Double,
+        source: Source,
+        transitionDuration: Double? = nil
+    ) {
+        self.id = id
+        self.startTime = startTime
+        self.focusTime = focusTime
+        self.endTime = endTime
+        self.focusPoint = focusPoint
+        self.scale = scale
+        self.source = source
+        self.transitionDuration = transitionDuration
+    }
 }

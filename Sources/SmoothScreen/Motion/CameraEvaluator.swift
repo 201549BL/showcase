@@ -100,7 +100,8 @@ struct CameraEvaluator {
             let duration = max(0.001, segment.focusTime - segment.startTime)
             progress = eased((time - segment.startTime) / duration)
         } else {
-            let exitStart = max(segment.focusTime, segment.endTime - zoomOutDuration)
+            let segmentZoomOutDuration = segment.transitionDuration ?? zoomOutDuration
+            let exitStart = max(segment.focusTime, segment.endTime - segmentZoomOutDuration)
             if time <= exitStart || connectsToNext {
                 progress = 1
             } else {

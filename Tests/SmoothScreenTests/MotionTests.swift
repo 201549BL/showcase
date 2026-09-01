@@ -182,6 +182,52 @@ struct MotionTests {
         #expect(segments[0].focusPoint.cgPoint == CGPoint(x: 800, y: 450))
     }
 
+    @Test("Calm groups more interactions with wider framing than Focused")
+    func zoomBehaviorPresets() {
+        let events = [
+            localized(time: 1, type: .leftMouseDown, x: 300, y: 300),
+            localized(time: 2.8, type: .leftMouseDown, x: 1_300, y: 600)
+        ]
+        let sourceSize = CGSize(width: 1_600, height: 900)
+
+        let calm = AutoZoomPlanner(settings: .calm).plan(
+            events: events,
+            sourceSize: sourceSize,
+            duration: 6
+        )
+        let focused = AutoZoomPlanner(settings: .focused).plan(
+            events: events,
+            sourceSize: sourceSize,
+            duration: 6
+        )
+
+        #expect(calm.count == 1)
+        #expect(focused.count == 2)
+        #expect(calm[0].scale < focused[0].scale)
+        #expect(calm[0].transitionDuration == ZoomBehaviorSettings.calm.transitionDuration)
+    }
+
+    @Test("Per-segment transition controls the zoom-out timing")
+    func segmentTransitionDuration() {
+        let segment = ZoomSegment(
+            id: UUID(),
+            startTime: 1,
+            focusTime: 1.4,
+            endTime: 3,
+            focusPoint: CodablePoint(CGPoint(x: 500, y: 400)),
+            scale: 1.6,
+            source: .automatic,
+            transitionDuration: 1
+        )
+        let evaluator = CameraEvaluator(
+            segments: [segment],
+            sourceSize: CGSize(width: 1_600, height: 900)
+        )
+
+        #expect(evaluator.state(at: 2.25).scale < 1.6)
+        #expect(evaluator.state(at: 2.25).scale > 1)
+    }
+
     @Test("Zoom focus is clamped away from source edges")
     func clampsZoomFocus() {
         let segments = AutoZoomPlanner().plan(

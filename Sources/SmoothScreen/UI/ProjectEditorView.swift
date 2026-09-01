@@ -285,8 +285,68 @@ struct ProjectEditorView: View {
 
     private var zoomSection: some View {
         editorSection("Zooms") {
+            Picker("Behavior", selection: zoomPresetBinding) {
+                ForEach(ZoomBehaviorSettings.Preset.allCases) { preset in
+                    Text(preset.displayName).tag(preset)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            Text(zoomPresetDescription)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if model.zoomBehavior.preset == .custom {
+                VStack(spacing: 10) {
+                    slider(
+                        "Intensity",
+                        value: zoomBehaviorBinding(
+                            \.scale,
+                            actionName: "Change Zoom Intensity"
+                        ),
+                        range: 1.1...2.5,
+                        actionName: "Change Zoom Intensity",
+                        onEditingEnded: model.regenerateAutomaticZooms
+                    )
+                    slider(
+                        "Transition",
+                        value: zoomBehaviorBinding(
+                            \.transitionDuration,
+                            actionName: "Change Zoom Transition"
+                        ),
+                        range: 0.2...1.2,
+                        actionName: "Change Zoom Transition",
+                        onEditingEnded: model.regenerateAutomaticZooms
+                    )
+                    slider(
+                        "Hold",
+                        value: zoomBehaviorBinding(
+                            \.holdDuration,
+                            actionName: "Change Zoom Hold"
+                        ),
+                        range: 0.4...2.5,
+                        actionName: "Change Zoom Hold",
+                        onEditingEnded: model.regenerateAutomaticZooms
+                    )
+                    slider(
+                        "Group clicks within",
+                        value: zoomBehaviorBinding(
+                            \.groupingInterval,
+                            actionName: "Change Click Grouping"
+                        ),
+                        range: 0.5...3.5,
+                        actionName: "Change Click Grouping",
+                        onEditingEnded: model.regenerateAutomaticZooms
+                    )
+                }
+                .padding(10)
+                .background(.quaternary.opacity(0.32), in: RoundedRectangle(cornerRadius: 8))
+            }
+
+            Divider()
+
             if model.project.zoomSegments.isEmpty {
-                Text("No clicks produced an automatic zoom. Move the playhead and add one manually.")
+                Text(emptyZoomMessage)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
@@ -374,7 +434,8 @@ struct ProjectEditorView: View {
         _ title: String,
         value: Binding<Double>,
         range: ClosedRange<Double>,
-        actionName: String
+        actionName: String,
+        onEditingEnded: (() -> Void)? = nil
     ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
@@ -390,6 +451,7 @@ struct ProjectEditorView: View {
                 if isEditing {
                     model.beginHistoryTransaction(actionName: actionName)
                 } else {
+                    onEditingEnded?()
                     model.commitHistoryTransaction()
                 }
             }
@@ -457,6 +519,49 @@ struct ProjectEditorView: View {
         if keyPath == \.startTime { return "Change Zoom Start" }
         if keyPath == \.endTime { return "Change Zoom End" }
         return "Change Zoom Focus"
+    }
+
+    private var zoomPresetBinding: Binding<ZoomBehaviorSettings.Preset> {
+        Binding(
+            get: { model.zoomBehavior.preset },
+            set: model.applyZoomPreset
+        )
+    }
+
+    private func zoomBehaviorBinding(
+        _ keyPath: WritableKeyPath<ZoomBehaviorSettings, Double>,
+        actionName: String
+    ) -> Binding<Double> {
+        Binding(
+            get: { model.zoomBehavior[keyPath: keyPath] },
+            set: { value in
+                model.updateCustomZoomBehavior(
+                    keyPath,
+                    value: value,
+                    actionName: actionName
+                )
+            }
+        )
+    }
+
+    private var zoomPresetDescription: String {
+        switch model.zoomBehavior.preset {
+        case .calm:
+            return "Fewer, wider camera moves with slower transitions and longer holds."
+        case .focused:
+            return "Tighter framing that responds quickly to separate interactions."
+        case .off:
+            return "Automatic zooms are disabled. Manual zooms remain unchanged."
+        case .custom:
+            return "Tune automatic zoom intensity, timing, and click grouping."
+        }
+    }
+
+    private var emptyZoomMessage: String {
+        if model.zoomBehavior.preset == .off {
+            return "Automatic zooms are off. Move the playhead and add one manually."
+        }
+        return "No clicks produced an automatic zoom. Move the playhead and add one manually."
     }
 
     private func aspectName(_ ratio: CanvasSettings.AspectRatio) -> String {

@@ -114,4 +114,56 @@ struct ProjectStoreTests {
         #expect(events[0].sourceFrame == nil)
         #expect(events[0].position == CodablePoint(CGPoint(x: 100, y: 200)))
     }
+
+    @Test("Reads projects created before zoom behavior settings")
+    func readsLegacyZoomProject() throws {
+        let source = CaptureSourceDescriptor(
+            kind: .display,
+            sourceID: 1,
+            title: "Display",
+            applicationName: nil,
+            frame: CodableRect(CGRect(x: 0, y: 0, width: 1_600, height: 900)),
+            scaleFactor: 1
+        )
+        let project = RecordingProject(
+            recording: RecordingMetadata(
+                source: source,
+                width: 1_600,
+                height: 900,
+                framesPerSecond: 60,
+                duration: 3,
+                includesSystemAudio: false,
+                includesMicrophone: false,
+                videoRelativePath: "media/screen.mov",
+                eventsRelativePath: "events/input-events.json"
+            ),
+            zoomSegments: [
+                ZoomSegment(
+                    id: UUID(),
+                    startTime: 1,
+                    focusTime: 1.4,
+                    endTime: 2.5,
+                    focusPoint: CodablePoint(CGPoint(x: 800, y: 450)),
+                    scale: 1.6,
+                    source: .automatic,
+                    transitionDuration: 0.4
+                )
+            ]
+        )
+        let encoded = try JSONEncoder().encode(project)
+        var json = try #require(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        json.removeValue(forKey: "zoomBehavior")
+        var segments = try #require(json["zoomSegments"] as? [[String: Any]])
+        segments[0].removeValue(forKey: "transitionDuration")
+        json["zoomSegments"] = segments
+
+        let legacyData = try JSONSerialization.data(withJSONObject: json)
+        let decoded = try JSONDecoder().decode(RecordingProject.self, from: legacyData)
+
+        #expect(decoded.zoomBehavior == nil)
+        #expect(decoded.resolvedZoomBehavior == .legacy)
+        #expect(decoded.zoomSegments[0].transitionDuration == nil)
+    }
 }
