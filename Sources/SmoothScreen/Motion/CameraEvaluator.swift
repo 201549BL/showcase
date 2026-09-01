@@ -16,6 +16,7 @@ struct CameraEvaluator {
     var travelZoneFraction = 0.45
     var farTravelStart = 0.38
     var farTravelEnd = 0.58
+    var cursorFollowSmoothingRadius = 0.2
 
     init(
         segments: [ZoomSegment],
@@ -30,13 +31,63 @@ struct CameraEvaluator {
     }
 
     func state(at time: Double) -> CameraState {
+        let baseState = undampedState(at: time, followsCursor: false)
+        guard cursorPath != nil, cursorFollowSmoothingRadius > 0 else {
+            return undampedState(at: time, followsCursor: true)
+        }
+
+        let sampleInterval = 1.0 / 60.0
+        let sampleRadius = Int(ceil(cursorFollowSmoothingRadius / sampleInterval))
+        var totalWeight = 0.0
+        var scaleAdjustment = 0.0
+        var focusAdjustmentX = 0.0
+        var focusAdjustmentY = 0.0
+
+        for offset in -sampleRadius...sampleRadius {
+            let sampleTime = time + (Double(offset) * sampleInterval)
+            guard sampleTime >= 0 else { continue }
+
+            let distance = abs(Double(offset) * sampleInterval)
+            let weight = max(
+                0,
+                1 - (distance / (cursorFollowSmoothingRadius + sampleInterval))
+            )
+            guard weight > 0 else { continue }
+
+            let sampleBase = undampedState(at: sampleTime, followsCursor: false)
+            let sampleFollowed = undampedState(at: sampleTime, followsCursor: true)
+            totalWeight += weight
+            scaleAdjustment += (sampleFollowed.scale - sampleBase.scale) * weight
+            focusAdjustmentX += (
+                sampleFollowed.focusPoint.x - sampleBase.focusPoint.x
+            ) * weight
+            focusAdjustmentY += (
+                sampleFollowed.focusPoint.y - sampleBase.focusPoint.y
+            ) * weight
+        }
+
+        guard totalWeight > 0 else { return baseState }
+        let scale = max(1, baseState.scale + (scaleAdjustment / totalWeight))
+        let focus = CGPoint(
+            x: baseState.focusPoint.x + (focusAdjustmentX / totalWeight),
+            y: baseState.focusPoint.y + (focusAdjustmentY / totalWeight)
+        )
+        return CameraState(scale: scale, focusPoint: clampedFocus(focus, scale: scale))
+    }
+
+    private func undampedState(at time: Double, followsCursor: Bool) -> CameraState {
         let center = CGPoint(x: sourceSize.width / 2, y: sourceSize.height / 2)
         guard sourceSize.width > 0, sourceSize.height > 0 else {
             return CameraState(scale: 1, focusPoint: .zero)
         }
 
         if let index = segments.firstIndex(where: { time >= $0.startTime && time <= $0.endTime }) {
-            return state(in: segments[index], at: time, index: index)
+            return state(
+                in: segments[index],
+                at: time,
+                index: index,
+                followsCursor: followsCursor
+            )
         }
 
         if
@@ -63,7 +114,7 @@ struct CameraEvaluator {
                     from: CameraState(scale: scale, focusPoint: focus),
                     anchor: focus,
                     at: time,
-                    enabled: true
+                    enabled: followsCursor
                 )
             }
         }
@@ -71,7 +122,12 @@ struct CameraEvaluator {
         return CameraState(scale: 1, focusPoint: center)
     }
 
-    private func state(in segment: ZoomSegment, at time: Double, index: Int) -> CameraState {
+    private func state(
+        in segment: ZoomSegment,
+        at time: Double,
+        index: Int,
+        followsCursor: Bool
+    ) -> CameraState {
         let center = CGPoint(x: sourceSize.width / 2, y: sourceSize.height / 2)
         let connectsFromPrevious = index > 0 && canTravel(from: segments[index - 1], to: segment)
         let connectsToNext = index + 1 < segments.count && canTravel(from: segment, to: segments[index + 1])
@@ -98,7 +154,7 @@ struct CameraEvaluator {
             from: baseState,
             anchor: target,
             at: time,
-            enabled: segment.source == .automatic
+            enabled: followsCursor && segment.source == .automatic
         )
     }
 
