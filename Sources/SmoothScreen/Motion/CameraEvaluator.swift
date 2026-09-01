@@ -9,85 +9,28 @@ struct CameraState: Equatable {
 struct CameraEvaluator {
     let segments: [ZoomSegment]
     let sourceSize: CGSize
-    let cursorPath: CursorPath?
     var zoomOutDuration: Double
     var maximumConnectedGap = 2.75
-    var connectedTravelFraction = 0.7
-    var travelZoneFraction = 0.45
-    var farTravelStart = 0.38
-    var farTravelEnd = 0.58
-    var cursorFollowSmoothingRadius = 0.2
+    var connectedTravelFraction = 0.5
 
     init(
         segments: [ZoomSegment],
         sourceSize: CGSize,
-        cursorPath: CursorPath? = nil,
         zoomOutDuration: Double = 0.5
     ) {
         self.segments = segments.sorted { $0.startTime < $1.startTime }
         self.sourceSize = sourceSize
-        self.cursorPath = cursorPath
         self.zoomOutDuration = zoomOutDuration
     }
 
     func state(at time: Double) -> CameraState {
-        let baseState = undampedState(at: time, followsCursor: false)
-        guard cursorPath != nil, cursorFollowSmoothingRadius > 0 else {
-            return undampedState(at: time, followsCursor: true)
-        }
-
-        let sampleInterval = 1.0 / 60.0
-        let sampleRadius = Int(ceil(cursorFollowSmoothingRadius / sampleInterval))
-        var totalWeight = 0.0
-        var scaleAdjustment = 0.0
-        var focusAdjustmentX = 0.0
-        var focusAdjustmentY = 0.0
-
-        for offset in -sampleRadius...sampleRadius {
-            let sampleTime = time + (Double(offset) * sampleInterval)
-            guard sampleTime >= 0 else { continue }
-
-            let distance = abs(Double(offset) * sampleInterval)
-            let weight = max(
-                0,
-                1 - (distance / (cursorFollowSmoothingRadius + sampleInterval))
-            )
-            guard weight > 0 else { continue }
-
-            let sampleBase = undampedState(at: sampleTime, followsCursor: false)
-            let sampleFollowed = undampedState(at: sampleTime, followsCursor: true)
-            totalWeight += weight
-            scaleAdjustment += (sampleFollowed.scale - sampleBase.scale) * weight
-            focusAdjustmentX += (
-                sampleFollowed.focusPoint.x - sampleBase.focusPoint.x
-            ) * weight
-            focusAdjustmentY += (
-                sampleFollowed.focusPoint.y - sampleBase.focusPoint.y
-            ) * weight
-        }
-
-        guard totalWeight > 0 else { return baseState }
-        let scale = max(1, baseState.scale + (scaleAdjustment / totalWeight))
-        let focus = CGPoint(
-            x: baseState.focusPoint.x + (focusAdjustmentX / totalWeight),
-            y: baseState.focusPoint.y + (focusAdjustmentY / totalWeight)
-        )
-        return CameraState(scale: scale, focusPoint: clampedFocus(focus, scale: scale))
-    }
-
-    private func undampedState(at time: Double, followsCursor: Bool) -> CameraState {
         let center = CGPoint(x: sourceSize.width / 2, y: sourceSize.height / 2)
         guard sourceSize.width > 0, sourceSize.height > 0 else {
             return CameraState(scale: 1, focusPoint: .zero)
         }
 
         if let index = segments.firstIndex(where: { time >= $0.startTime && time <= $0.endTime }) {
-            return state(
-                in: segments[index],
-                at: time,
-                index: index,
-                followsCursor: followsCursor
-            )
+            return state(in: segments[index], at: time, index: index)
         }
 
         if
@@ -110,24 +53,14 @@ struct CameraEvaluator {
                 let scale = max(1, previous.scale)
                     + ((max(1, next.scale) - max(1, previous.scale)) * progress)
                 let focus = previousTarget.interpolated(to: nextTarget, progress: progress)
-                return followingCursor(
-                    from: CameraState(scale: scale, focusPoint: focus),
-                    anchor: focus,
-                    at: time,
-                    enabled: followsCursor
-                )
+                return CameraState(scale: scale, focusPoint: focus)
             }
         }
 
         return CameraState(scale: 1, focusPoint: center)
     }
 
-    private func state(
-        in segment: ZoomSegment,
-        at time: Double,
-        index: Int,
-        followsCursor: Bool
-    ) -> CameraState {
+    private func state(in segment: ZoomSegment, at time: Double, index: Int) -> CameraState {
         let center = CGPoint(x: sourceSize.width / 2, y: sourceSize.height / 2)
         let connectsFromPrevious = index > 0 && canTravel(from: segments[index - 1], to: segment)
         let connectsToNext = index + 1 < segments.count && canTravel(from: segment, to: segments[index + 1])
@@ -150,12 +83,7 @@ struct CameraEvaluator {
             scale: 1 + ((max(1, segment.scale) - 1) * progress),
             focusPoint: center.interpolated(to: target, progress: progress)
         )
-        return followingCursor(
-            from: baseState,
-            anchor: target,
-            at: time,
-            enabled: followsCursor && segment.source == .automatic
-        )
+        return baseState
     }
 
     private func canTravel(from first: ZoomSegment, to second: ZoomSegment) -> Bool {
@@ -169,57 +97,6 @@ struct CameraEvaluator {
         let secondTarget = clampedFocus(second.focusPoint.cgPoint, scale: scale)
         return abs(secondTarget.x - firstTarget.x) <= viewport.width * connectedTravelFraction
             && abs(secondTarget.y - firstTarget.y) <= viewport.height * connectedTravelFraction
-    }
-
-    private func followingCursor(
-        from baseState: CameraState,
-        anchor: CGPoint,
-        at time: Double,
-        enabled: Bool
-    ) -> CameraState {
-        guard
-            enabled,
-            baseState.scale > 1.001,
-            let cursorFrame = cursorPath?.frame(at: time),
-            cursorFrame.opacity > 0.001
-        else { return baseState }
-
-        let cursor = cursorFrame.position
-        let normalizedTravel = hypot(
-            (cursor.x - anchor.x) / sourceSize.width,
-            (cursor.y - anchor.y) / sourceSize.height
-        )
-        let farProgress = eased(
-            (normalizedTravel - farTravelStart) / max(0.001, farTravelEnd - farTravelStart)
-        )
-        let scale = 1 + ((baseState.scale - 1) * (1 - farProgress))
-        let adjustedZoomProgress = (scale - 1) / max(0.001, baseState.scale - 1)
-        var focus = center.interpolated(
-            to: baseState.focusPoint,
-            progress: adjustedZoomProgress
-        )
-
-        guard scale > 1.001 else {
-            return CameraState(scale: 1, focusPoint: center)
-        }
-
-        let halfViewportWidth = sourceSize.width / (2 * scale)
-        let halfViewportHeight = sourceSize.height / (2 * scale)
-        let halfZoneWidth = halfViewportWidth * travelZoneFraction
-        let halfZoneHeight = halfViewportHeight * travelZoneFraction
-
-        if cursor.x < focus.x - halfZoneWidth {
-            focus.x = cursor.x + halfZoneWidth
-        } else if cursor.x > focus.x + halfZoneWidth {
-            focus.x = cursor.x - halfZoneWidth
-        }
-        if cursor.y < focus.y - halfZoneHeight {
-            focus.y = cursor.y + halfZoneHeight
-        } else if cursor.y > focus.y + halfZoneHeight {
-            focus.y = cursor.y - halfZoneHeight
-        }
-
-        return CameraState(scale: scale, focusPoint: clampedFocus(focus, scale: scale))
     }
 
     private func eased(_ value: Double) -> Double {
@@ -236,9 +113,5 @@ struct CameraEvaluator {
             x: min(sourceSize.width - halfWidth, max(halfWidth, point.x)),
             y: min(sourceSize.height - halfHeight, max(halfHeight, point.y))
         )
-    }
-
-    private var center: CGPoint {
-        CGPoint(x: sourceSize.width / 2, y: sourceSize.height / 2)
     }
 }
