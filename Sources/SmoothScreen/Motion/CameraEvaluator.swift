@@ -29,6 +29,10 @@ struct CameraEvaluator {
             return CameraState(scale: 1, focusPoint: .zero)
         }
 
+        if let transition = overlappingTransition(at: time) {
+            return transition
+        }
+
         if let index = segments.firstIndex(where: { time >= $0.startTime && time <= $0.endTime }) {
             return state(in: segments[index], at: time, index: index)
         }
@@ -58,6 +62,33 @@ struct CameraEvaluator {
         }
 
         return CameraState(scale: 1, focusPoint: center)
+    }
+
+    private func overlappingTransition(at time: Double) -> CameraState? {
+        guard segments.count > 1 else { return nil }
+
+        for nextIndex in segments.indices.dropFirst().reversed() {
+            let previous = segments[nextIndex - 1]
+            let next = segments[nextIndex]
+            guard next.startTime < previous.endTime else { continue }
+
+            let transitionStart = previous.focusTime
+            let transitionEnd = max(transitionStart + 0.001, next.focusTime)
+            guard time >= transitionStart, time <= transitionEnd else { continue }
+
+            let progress = eased((time - transitionStart) / (transitionEnd - transitionStart))
+            let previousScale = max(1, previous.scale)
+            let nextScale = max(1, next.scale)
+            let scale = previousScale + ((nextScale - previousScale) * progress)
+            let previousTarget = clampedFocus(previous.focusPoint.cgPoint, scale: previousScale)
+            let nextTarget = clampedFocus(next.focusPoint.cgPoint, scale: nextScale)
+            return CameraState(
+                scale: scale,
+                focusPoint: previousTarget.interpolated(to: nextTarget, progress: progress)
+            )
+        }
+
+        return nil
     }
 
     private func state(in segment: ZoomSegment, at time: Double, index: Int) -> CameraState {

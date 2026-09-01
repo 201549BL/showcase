@@ -146,6 +146,22 @@ struct MotionTests {
         #expect(segments[0].endTime == 3)
     }
 
+    @Test("Ignores the recording-stop click at the end of the timeline")
+    func ignoresRecordingStopClick() {
+        let events = [
+            localized(time: 1, type: .leftMouseDown, x: 300, y: 300),
+            localized(time: 9.8, type: .leftMouseDown, x: 1_200, y: 700)
+        ]
+
+        let segments = AutoZoomPlanner().plan(
+            events: events,
+            sourceSize: CGSize(width: 1_600, height: 900),
+            duration: 10
+        )
+
+        #expect(segments.count == 1)
+    }
+
     @Test("Zoom focus is clamped away from source edges")
     func clampsZoomFocus() {
         let segments = AutoZoomPlanner().plan(
@@ -212,6 +228,41 @@ struct MotionTests {
         #expect(travelingState.scale > 1.3)
         #expect(travelingState.focusPoint.x > 500)
         #expect(travelingState.focusPoint.x < 760)
+    }
+
+    @Test("Overlapping interaction shots become one continuous pan")
+    func cameraPansAcrossOverlappingShots() {
+        let segments = [
+            ZoomSegment(
+                id: UUID(),
+                startTime: 1,
+                focusTime: 1.4,
+                endTime: 3,
+                focusPoint: CodablePoint(CGPoint(x: 500, y: 400)),
+                scale: 1.6,
+                source: .automatic
+            ),
+            ZoomSegment(
+                id: UUID(),
+                startTime: 2.4,
+                focusTime: 3,
+                endTime: 5,
+                focusPoint: CodablePoint(CGPoint(x: 1_100, y: 400)),
+                scale: 1.6,
+                source: .automatic
+            )
+        ]
+        let evaluator = CameraEvaluator(
+            segments: segments,
+            sourceSize: CGSize(width: 1_600, height: 900)
+        )
+
+        let travelingState = evaluator.state(at: 2.4)
+
+        #expect(travelingState.scale == 1.6)
+        #expect(travelingState.focusPoint.x > 500)
+        #expect(travelingState.focusPoint.x < 1_100)
+        #expect(abs(1_100 - travelingState.focusPoint.x) < 500)
     }
 
     @Test("Automatic zoom holds its focus for the duration of a shot")

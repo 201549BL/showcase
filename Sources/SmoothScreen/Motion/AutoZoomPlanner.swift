@@ -10,6 +10,7 @@ struct AutoZoomPlanner {
         var zoomOutDuration = 0.5
         var mergeTimeInterval = 1.5
         var mergeDistanceFraction = 0.18
+        var endExclusionDuration = 0.45
     }
 
     var configuration = Configuration()
@@ -21,8 +22,15 @@ struct AutoZoomPlanner {
     ) -> [ZoomSegment] {
         guard sourceSize.width > 0, sourceSize.height > 0, duration > 0 else { return [] }
 
+        let endCutoff = duration > configuration.endExclusionDuration
+            ? duration - configuration.endExclusionDuration
+            : duration
         let clicks = events.compactMap { event -> Click? in
-            guard event.isPrimaryClick, let position = event.position else { return nil }
+            guard
+                event.isPrimaryClick,
+                event.timestamp <= endCutoff,
+                let position = event.position
+            else { return nil }
             return Click(timestamp: event.timestamp, position: position)
         }.sorted { $0.timestamp < $1.timestamp }
 
