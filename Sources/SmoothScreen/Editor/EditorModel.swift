@@ -10,14 +10,18 @@ final class EditorModel: ObservableObject {
     @Published private(set) var isExporting = false
     @Published private(set) var lastExportURL: URL?
     @Published var presentedError: PresentedError?
+    @Published var selectedZoomID: UUID?
+    @Published private(set) var playheadTime = 0.0
 
     let projectURL: URL
     let player = AVPlayer()
 
     private let projectStore: ProjectStore
     private let events: [RecordedInputEvent]
+    private let localizedEvents: [LocalizedInputEvent]
     private let exporter: VideoExporter
     private var previewRefreshTask: Task<Void, Never>?
+    private var timeObserver: Any?
 
     init(
         projectURL: URL,
@@ -27,9 +31,32 @@ final class EditorModel: ObservableObject {
         self.projectURL = projectURL
         self.projectStore = projectStore
         self.exporter = exporter
-        project = try projectStore.loadProject(at: projectURL)
-        events = try projectStore.loadEvents(at: projectURL)
+        let loadedProject = try projectStore.loadProject(at: projectURL)
+        let loadedEvents = try projectStore.loadEvents(at: projectURL)
+        project = loadedProject
+        events = loadedEvents
+        localizedEvents = InputEventLocalizer().localize(
+            loadedEvents,
+            source: loadedProject.recording.source,
+            pixelWidth: loadedProject.recording.width,
+            pixelHeight: loadedProject.recording.height
+        )
+        selectedZoomID = loadedProject.zoomSegments.first?.id
         rebuildPreview(preservingTime: false)
+        timeObserver = player.addPeriodicTimeObserver(
+            forInterval: CMTime(seconds: 1.0 / 30.0, preferredTimescale: 600),
+            queue: .main
+        ) { [weak self] time in
+            Task { @MainActor [weak self] in
+                self?.playheadTime = max(0, CMTimeGetSeconds(time))
+            }
+        }
+    }
+
+    deinit {
+        if let timeObserver {
+            player.removeTimeObserver(timeObserver)
+        }
     }
 
     var canvasAspectRatio: Double {
@@ -47,6 +74,15 @@ final class EditorModel: ObservableObject {
 
     var trimEnd: Double {
         project.timeline?.trimEnd ?? recordingDuration
+    }
+
+    var clickTimestamps: [Double] {
+        localizedEvents.filter(\.isPrimaryClick).map(\.timestamp)
+    }
+
+    var selectedZoom: ZoomSegment? {
+        guard let selectedZoomID else { return nil }
+        return project.zoomSegments.first { $0.id == selectedZoomID }
     }
 
     func setTrimStart(_ value: Double) {
@@ -80,14 +116,8 @@ final class EditorModel: ObservableObject {
 
     func regenerateAutomaticZooms() {
         let manual = project.zoomSegments.filter { $0.source == .manual }
-        let localized = InputEventLocalizer().localize(
-            events,
-            source: project.recording.source,
-            pixelWidth: project.recording.width,
-            pixelHeight: project.recording.height
-        )
         let automatic = AutoZoomPlanner().plan(
-            events: localized,
+            events: localizedEvents,
             sourceSize: CGSize(width: project.recording.width, height: project.recording.height),
             duration: project.recording.duration ?? 0
         )
@@ -116,11 +146,88 @@ final class EditorModel: ObservableObject {
         )
         project.zoomSegments.append(segment)
         project.zoomSegments.sort { $0.startTime < $1.startTime }
+        selectedZoomID = segment.id
+        seek(to: segment.focusTime)
         projectDidChange()
     }
 
     func deleteZoom(id: UUID) {
         project.zoomSegments.removeAll { $0.id == id }
+        if selectedZoomID == id { selectedZoomID = nil }
+        projectDidChange()
+    }
+
+    func selectZoom(id: UUID, seekToFocus: Bool = true) {
+        selectedZoomID = id
+        guard
+            seekToFocus,
+            let zoom = project.zoomSegments.first(where: { $0.id == id })
+        else { return }
+        seek(to: zoom.focusTime)
+    }
+
+    func seek(to time: Double) {
+        let seconds = min(trimEnd, max(trimStart, time))
+        player.seek(
+            to: CMTime(seconds: seconds, preferredTimescale: 600),
+            toleranceBefore: .zero,
+            toleranceAfter: .zero
+        )
+        playheadTime = seconds
+    }
+
+    func moveZoom(id: UUID, toStart proposedStart: Double) {
+        guard let index = project.zoomSegments.firstIndex(where: { $0.id == id }) else { return }
+        let duration = project.zoomSegments[index].endTime
+            - project.zoomSegments[index].startTime
+        let focusOffset = project.zoomSegments[index].focusTime
+            - project.zoomSegments[index].startTime
+        let start = min(max(0, proposedStart), max(0, recordingDuration - duration))
+        project.zoomSegments[index].startTime = start
+        project.zoomSegments[index].focusTime = min(start + duration, start + focusOffset)
+        project.zoomSegments[index].endTime = start + duration
+    }
+
+    func resizeZoomStart(id: UUID, to proposedStart: Double) {
+        guard let index = project.zoomSegments.firstIndex(where: { $0.id == id }) else { return }
+        let latest = project.zoomSegments[index].endTime - 0.1
+        let start = min(max(0, proposedStart), latest)
+        project.zoomSegments[index].startTime = start
+        project.zoomSegments[index].focusTime = max(
+            start,
+            project.zoomSegments[index].focusTime
+        )
+    }
+
+    func resizeZoomEnd(id: UUID, to proposedEnd: Double) {
+        guard let index = project.zoomSegments.firstIndex(where: { $0.id == id }) else { return }
+        let earliest = project.zoomSegments[index].startTime + 0.1
+        let end = max(earliest, min(recordingDuration, proposedEnd))
+        project.zoomSegments[index].endTime = end
+        project.zoomSegments[index].focusTime = min(
+            end,
+            project.zoomSegments[index].focusTime
+        )
+    }
+
+    func commitTimelineEdit() {
+        project.zoomSegments.sort { $0.startTime < $1.startTime }
+        projectDidChange()
+    }
+
+    func setSelectedZoomFocus(_ point: CGPoint) {
+        guard
+            let selectedZoomID,
+            let index = project.zoomSegments.firstIndex(where: { $0.id == selectedZoomID })
+        else { return }
+
+        let scale = max(1, project.zoomSegments[index].scale)
+        let halfWidth = Double(project.recording.width) / (2 * scale)
+        let halfHeight = Double(project.recording.height) / (2 * scale)
+        project.zoomSegments[index].focusPoint = CodablePoint(CGPoint(
+            x: min(Double(project.recording.width) - halfWidth, max(halfWidth, point.x)),
+            y: min(Double(project.recording.height) - halfHeight, max(halfHeight, point.y))
+        ))
         projectDidChange()
     }
 

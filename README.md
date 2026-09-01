@@ -13,6 +13,8 @@ The usable V1 includes:
 - Smoothed, high-resolution synthetic cursor rendering
 - Automatic click-driven zoom generation and manual zooms
 - Live composed preview with background, framing, cursor, and zoom controls
+- Visual click/zoom timeline with seeking, moving, and edge resizing
+- Direct focus editing by clicking or dragging on the video preview
 - Landscape, square, vertical, and source-aspect exports
 - Beginning/end trimming and 1080p or 4K MP4 export
 
@@ -35,6 +37,16 @@ open .build/SmoothScreen.app
 The first capture prompts for macOS permissions. Restart the application after granting Screen Recording permission if macOS requests it.
 
 For command-line development you can also use `swift run SmoothScreen`, but the app-bundle workflow provides a stable bundle identifier for macOS privacy permissions.
+
+## Editing a recording
+
+Open a `.screenproject` and use the timeline below the preview to edit the camera:
+
+- Click the empty timeline to seek.
+- Click a zoom block to select it, drag its body to move it, or drag either white edge to resize it.
+- Orange marks show recorded clicks.
+- Choose **Set Focus**, then click or drag to a point in the preview to center the selected zoom there.
+- **Add Zoom Here** creates a manual zoom at the playhead; **Regenerate** rebuilds automatic zooms from recorded clicks.
 
 ## Project layout
 

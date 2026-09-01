@@ -4,6 +4,7 @@ import SwiftUI
 struct ProjectEditorView: View {
     @ObservedObject var model: EditorModel
     let onClose: () -> Void
+    @State private var isEditingFocus = false
 
     var body: some View {
         HSplitView {
@@ -46,16 +47,23 @@ struct ProjectEditorView: View {
                 dismissButton: .default(Text("OK"))
             )
         }
+        .onChange(of: model.selectedZoomID) {
+            if model.selectedZoomID == nil {
+                isEditingFocus = false
+            }
+        }
     }
 
     private var previewPane: some View {
         VStack(spacing: 0) {
-            ZStack {
-                Color.black.opacity(0.92)
-                VideoPlayer(player: model.player)
-                    .aspectRatio(model.canvasAspectRatio, contentMode: .fit)
-                    .padding(24)
-            }
+            previewStage
+
+            Divider()
+
+            ZoomTimelineView(model: model)
+                .frame(height: 112)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
 
             Divider()
 
@@ -73,6 +81,22 @@ struct ProjectEditorView: View {
                     Label("Regenerate", systemImage: "wand.and.stars")
                 }
 
+                Button {
+                    isEditingFocus.toggle()
+                    if isEditingFocus, let zoom = model.selectedZoom {
+                        model.seek(to: zoom.focusTime)
+                    }
+                } label: {
+                    Label(
+                        isEditingFocus ? "Done Focusing" : "Set Focus",
+                        systemImage: isEditingFocus ? "checkmark.circle.fill" : "scope"
+                    )
+                }
+                .buttonStyle(.bordered)
+                .tint(isEditingFocus ? .accentColor : nil)
+                .disabled(model.selectedZoom == nil)
+                .help("Choose the focal point directly in the preview")
+
                 Spacer()
 
                 Text("\(model.project.zoomSegments.count) zooms")
@@ -81,6 +105,33 @@ struct ProjectEditorView: View {
             }
             .padding(14)
         }
+    }
+
+    private var previewStage: some View {
+        GeometryReader { proxy in
+            let availableSize = CGSize(
+                width: max(1, proxy.size.width - 48),
+                height: max(1, proxy.size.height - 48)
+            )
+            let previewSize = aspectFit(
+                aspectRatio: model.canvasAspectRatio,
+                inside: availableSize
+            )
+
+            ZStack {
+                Color.black.opacity(0.92)
+
+                ZStack {
+                    VideoPlayer(player: model.player)
+
+                    if isEditingFocus, let zoom = model.selectedZoom {
+                        PreviewFocusOverlay(model: model, zoom: zoom)
+                    }
+                }
+                .frame(width: previewSize.width, height: previewSize.height)
+            }
+        }
+        .frame(minHeight: 260)
     }
 
     private var controlsPane: some View {
@@ -179,11 +230,16 @@ struct ProjectEditorView: View {
                 ForEach(Array(model.project.zoomSegments.enumerated()), id: \.element.id) { index, zoom in
                     VStack(alignment: .leading, spacing: 7) {
                         HStack {
-                            Label(
-                                timeLabel(zoom.startTime),
-                                systemImage: zoom.source == .automatic ? "wand.and.stars" : "hand.draw"
-                            )
-                            .font(.caption)
+                            Button {
+                                model.selectZoom(id: zoom.id)
+                            } label: {
+                                Label(
+                                    timeLabel(zoom.startTime),
+                                    systemImage: zoom.source == .automatic ? "wand.and.stars" : "hand.draw"
+                                )
+                                .font(.caption)
+                            }
+                            .buttonStyle(.plain)
 
                             Spacer()
 
@@ -223,6 +279,13 @@ struct ProjectEditorView: View {
                     }
                     .padding(10)
                     .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(
+                                model.selectedZoomID == zoom.id ? Color.accentColor : .clear,
+                                lineWidth: 2
+                            )
+                    }
                 }
             }
         }
@@ -328,6 +391,92 @@ struct ProjectEditorView: View {
             startPoint: .bottomLeading,
             endPoint: .topTrailing
         )
+    }
+
+    private func aspectFit(aspectRatio: Double, inside size: CGSize) -> CGSize {
+        guard aspectRatio > 0, size.width > 0, size.height > 0 else { return size }
+        if size.width / size.height > aspectRatio {
+            return CGSize(width: size.height * aspectRatio, height: size.height)
+        }
+        return CGSize(width: size.width, height: size.width / aspectRatio)
+    }
+}
+
+private struct PreviewFocusOverlay: View {
+    @ObservedObject var model: EditorModel
+    let zoom: ZoomSegment
+
+    var body: some View {
+        GeometryReader { proxy in
+            let canvas = CanvasGeometry(project: model.project, quality: model.quality)
+            let mapper = PreviewFocusMapper(
+                viewSize: proxy.size,
+                canvasSize: canvas.canvasSize,
+                screenRect: canvas.screenRect,
+                sourceSize: CGSize(
+                    width: model.project.recording.width,
+                    height: model.project.recording.height
+                ),
+                cameraFocus: zoom.focusPoint.cgPoint,
+                cameraScale: zoom.scale
+            )
+            let displayScale = mapper.displayedCanvasRect.width / max(1, canvas.canvasSize.width)
+            let contentRect = CGRect(
+                x: mapper.displayedCanvasRect.minX + canvas.screenRect.minX * displayScale,
+                y: mapper.displayedCanvasRect.minY
+                    + (canvas.canvasSize.height - canvas.screenRect.maxY) * displayScale,
+                width: canvas.screenRect.width * displayScale,
+                height: canvas.screenRect.height * displayScale
+            )
+
+            ZStack {
+                Color.black.opacity(0.18)
+
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.white.opacity(0.65), style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
+                    .frame(width: contentRect.width, height: contentRect.height)
+                    .position(x: contentRect.midX, y: contentRect.midY)
+
+                focusReticle
+                    .position(x: contentRect.midX, y: contentRect.midY)
+
+                VStack {
+                    Text("Click or drag to the point this zoom should center on")
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .padding(12)
+                    Spacer()
+                }
+            }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onEnded { value in
+                        guard let point = mapper.sourcePoint(for: value.location) else { return }
+                        model.setSelectedZoomFocus(point)
+                        if let selected = model.selectedZoom {
+                            model.seek(to: selected.focusTime)
+                        }
+                    }
+            )
+        }
+    }
+
+    private var focusReticle: some View {
+        ZStack {
+            Circle()
+                .stroke(.white, lineWidth: 2)
+                .frame(width: 26, height: 26)
+            Rectangle()
+                .fill(.white)
+                .frame(width: 1, height: 36)
+            Rectangle()
+                .fill(.white)
+                .frame(width: 36, height: 1)
+        }
+        .shadow(color: .black.opacity(0.8), radius: 2)
     }
 }
 
