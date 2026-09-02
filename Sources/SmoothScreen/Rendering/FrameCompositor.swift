@@ -13,6 +13,11 @@ final class FrameCompositor {
     private let cursorHotSpot: CGPoint
     private let cursorNativeSize: CGSize
     private let clickEvents: [LocalizedInputEvent]
+    private let canvasRect: CGRect
+    private let screenMask: CIImage
+    private let transparentCanvas: CIImage
+    private let shadowImage: CIImage
+    private let backgroundImage: CIImage
 
     init(
         project: RecordingProject,
@@ -20,7 +25,24 @@ final class FrameCompositor {
         quality: ExportQuality
     ) {
         self.project = project
-        geometry = CanvasGeometry(project: project, quality: quality)
+        let builtGeometry = CanvasGeometry(project: project, quality: quality)
+        geometry = builtGeometry
+        let builtCanvasRect = CGRect(origin: .zero, size: builtGeometry.canvasSize)
+        canvasRect = builtCanvasRect
+        screenMask = Self.roundedRectangle(
+            rect: builtGeometry.screenRect,
+            radius: builtGeometry.scaledCornerRadius,
+            color: .white
+        )
+        transparentCanvas = CIImage(color: .clear).cropped(to: builtCanvasRect)
+        shadowImage = Self.makeShadow(
+            canvasRect: builtCanvasRect,
+            geometry: builtGeometry
+        )
+        backgroundImage = Self.makeBackground(
+            canvasRect: builtCanvasRect,
+            canvas: project.canvas
+        )
 
         let localizedEvents = InputEventLocalizer().localize(
             events,
@@ -28,17 +50,20 @@ final class FrameCompositor {
             pixelWidth: project.recording.width,
             pixelHeight: project.recording.height
         )
-        cursorPath = CursorPath(
+        let builtCursorPath = CursorPath(
             events: localizedEvents,
             smoothing: project.cursor.smoothing,
             hideAfter: project.cursor.hideAfter
         )
+        cursorPath = builtCursorPath
         cameraEvaluator = CameraEvaluator(
             segments: project.zoomSegments.sorted { $0.startTime < $1.startTime },
             sourceSize: CGSize(
                 width: project.recording.width,
                 height: project.recording.height
-            )
+            ),
+            duration: project.recording.duration,
+            cursorPath: builtCursorPath
         )
         clickEvents = localizedEvents.filter { $0.isPrimaryClick && $0.position != nil }
 
@@ -52,7 +77,6 @@ final class FrameCompositor {
 
     func render(sourceImage: CIImage, at compositionTime: CMTime) -> CIImage {
         let time = max(0, CMTimeGetSeconds(compositionTime))
-        let canvasRect = CGRect(origin: .zero, size: geometry.canvasSize)
         let sourceSize = CGSize(
             width: project.recording.width,
             height: project.recording.height
@@ -78,25 +102,17 @@ final class FrameCompositor {
             screenContent = clickRing.composited(over: screenContent)
         }
 
-        let mask = roundedRectangle(
-            rect: geometry.screenRect,
-            radius: geometry.scaledCornerRadius,
-            color: .white
-        )
-        let transparent = CIImage(color: .clear).cropped(to: canvasRect)
         let clippedScreen = screenContent.applyingFilter(
             "CIBlendWithMask",
             parameters: [
-                kCIInputBackgroundImageKey: transparent,
-                kCIInputMaskImageKey: mask
+                kCIInputBackgroundImageKey: transparentCanvas,
+                kCIInputMaskImageKey: screenMask
             ]
         )
 
-        let shadow = renderShadow(canvasRect: canvasRect)
-        let background = renderBackground(canvasRect: canvasRect)
         return clippedScreen
-            .composited(over: shadow)
-            .composited(over: background)
+            .composited(over: shadowImage)
+            .composited(over: backgroundImage)
             .cropped(to: canvasRect)
     }
 
@@ -183,12 +199,12 @@ final class FrameCompositor {
         let strokeWidth = max(1, 3 * designScale)
         let innerRadius = max(0, radius - strokeWidth)
         let innerRect = outerRect.insetBy(dx: strokeWidth, dy: strokeWidth)
-        let outer = roundedRectangle(
+        let outer = Self.roundedRectangle(
             rect: outerRect,
             radius: radius,
             color: CIColor(red: 1, green: 1, blue: 1, alpha: opacity)
         )
-        let inner = roundedRectangle(
+        let inner = Self.roundedRectangle(
             rect: innerRect,
             radius: innerRadius,
             color: .white
@@ -199,17 +215,23 @@ final class FrameCompositor {
         )
     }
 
-    private func renderBackground(canvasRect: CGRect) -> CIImage {
+    private static func makeBackground(
+        canvasRect: CGRect,
+        canvas: CanvasSettings
+    ) -> CIImage {
         let filter = CIFilter.linearGradient()
         filter.point0 = CGPoint(x: 0, y: 0)
         filter.point1 = CGPoint(x: canvasRect.maxX, y: canvasRect.maxY)
-        filter.color0 = CIColor(hex: project.canvas.backgroundStartHex)
-        filter.color1 = CIColor(hex: project.canvas.backgroundEndHex)
+        filter.color0 = CIColor(hex: canvas.backgroundStartHex)
+        filter.color1 = CIColor(hex: canvas.backgroundEndHex)
         return filter.outputImage?.cropped(to: canvasRect)
             ?? CIImage(color: CIColor(red: 0.2, green: 0.2, blue: 0.22)).cropped(to: canvasRect)
     }
 
-    private func renderShadow(canvasRect: CGRect) -> CIImage {
+    private static func makeShadow(
+        canvasRect: CGRect,
+        geometry: CanvasGeometry
+    ) -> CIImage {
         guard geometry.scaledShadowRadius > 0 else {
             return CIImage(color: .clear).cropped(to: canvasRect)
         }
@@ -228,7 +250,11 @@ final class FrameCompositor {
             .cropped(to: canvasRect)
     }
 
-    private func roundedRectangle(rect: CGRect, radius: Double, color: CIColor) -> CIImage {
+    private static func roundedRectangle(
+        rect: CGRect,
+        radius: Double,
+        color: CIColor
+    ) -> CIImage {
         let filter = CIFilter.roundedRectangleGenerator()
         filter.extent = rect
         filter.radius = Float(max(0, radius))

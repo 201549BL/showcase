@@ -373,7 +373,8 @@ final class EditorModel: ObservableObject {
             asset: asset,
             project: project,
             events: events,
-            quality: quality
+            quality: quality,
+            purpose: .preview
         )
         let item = AVPlayerItem(asset: asset)
         item.videoComposition = built.composition

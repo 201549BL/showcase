@@ -17,6 +17,7 @@ The usable V1 includes:
 - Direct focus editing by clicking or dragging on the video preview
 - Undo and redo for timeline, focus, zoom, trim, canvas, and cursor edits
 - Calm, Focused, Off, and Custom automatic zoom behavior
+- Spring-smoothed camera tracking with a cursor travel zone and distance-aware reframing
 - Landscape, square, vertical, and source-aspect exports
 - Beginning/end trimming and 1080p or 4K MP4 export
 

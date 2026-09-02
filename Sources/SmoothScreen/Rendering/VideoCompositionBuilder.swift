@@ -8,6 +8,11 @@ struct BuiltVideoComposition {
 }
 
 struct VideoCompositionBuilder {
+    enum Purpose {
+        case preview
+        case export
+    }
+
     private let context = CIContext(options: [
         .cacheIntermediates: true,
         .useSoftwareRenderer: false
@@ -17,7 +22,8 @@ struct VideoCompositionBuilder {
         asset: AVAsset,
         project: RecordingProject,
         events: [RecordedInputEvent],
-        quality: ExportQuality
+        quality: ExportQuality,
+        purpose: Purpose = .export
     ) -> BuiltVideoComposition {
         let compositor = FrameCompositor(
             project: project,
@@ -35,7 +41,12 @@ struct VideoCompositionBuilder {
             }
         )
         composition.renderSize = compositor.renderSize
+        composition.sourceTrackIDForFrameTiming = kCMPersistentTrackID_Invalid
         composition.frameDuration = CMTime(value: 1, timescale: 60)
+        if purpose == .preview {
+            let longestEdge = max(composition.renderSize.width, composition.renderSize.height)
+            composition.renderScale = Float(min(1, 1_280 / max(1, longestEdge)))
+        }
         return BuiltVideoComposition(composition: composition, compositor: compositor)
     }
 }

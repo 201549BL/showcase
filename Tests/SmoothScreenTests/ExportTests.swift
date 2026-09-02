@@ -80,6 +80,14 @@ struct ExportTests {
         #expect(naturalSize == CGSize(width: 320, height: 180))
         #expect(outputDuration > 0.55 && outputDuration < 0.7)
 
+        let frameTimes = try framePresentationTimes(asset: outputAsset, track: tracks[0])
+            .sorted()
+        #expect(frameTimes.count >= 32)
+        let largestFrameGap = zip(frameTimes, frameTimes.dropFirst())
+            .map { CMTimeGetSeconds($1 - $0) }
+            .max() ?? 0
+        #expect(largestFrameGap < 0.025)
+
         if ProcessInfo.processInfo.environment["SMOOTHSCREEN_KEEP_FIXTURE"] == "1" {
             let retained = URL(fileURLWithPath: ".build/export-fixture.mp4")
             try? FileManager.default.removeItem(at: retained)
@@ -89,6 +97,24 @@ struct ExportTests {
             try? FileManager.default.removeItem(at: retainedProject)
             try FileManager.default.copyItem(at: locations.projectURL, to: retainedProject)
         }
+    }
+
+    private func framePresentationTimes(
+        asset: AVAsset,
+        track: AVAssetTrack
+    ) throws -> [CMTime] {
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
+        #expect(reader.canAdd(output))
+        reader.add(output)
+        #expect(reader.startReading())
+
+        var times: [CMTime] = []
+        while let sample = output.copyNextSampleBuffer() {
+            times.append(CMSampleBufferGetPresentationTimeStamp(sample))
+        }
+        #expect(reader.status == .completed)
+        return times
     }
 
     private func createFixtureVideo(at url: URL) async throws {
