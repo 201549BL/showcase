@@ -22,10 +22,15 @@ final class FrameCompositor {
     init(
         project: RecordingProject,
         events: [RecordedInputEvent],
-        quality: ExportQuality
+        quality: ExportQuality,
+        maximumCanvasDimension: Double? = nil
     ) {
         self.project = project
-        let builtGeometry = CanvasGeometry(project: project, quality: quality)
+        let builtGeometry = CanvasGeometry(
+            project: project,
+            quality: quality,
+            maximumCanvasDimension: maximumCanvasDimension
+        )
         geometry = builtGeometry
         let builtCanvasRect = CGRect(origin: .zero, size: builtGeometry.canvasSize)
         canvasRect = builtCanvasRect
@@ -56,6 +61,24 @@ final class FrameCompositor {
             hideAfter: project.cursor.hideAfter
         )
         cursorPath = builtCursorPath
+        let builtCursorHotSpot = CGPoint(x: 2, y: 2)
+        let builtCursorNativeSize = CGSize(width: 32, height: 48)
+        cursorHotSpot = builtCursorHotSpot
+        cursorNativeSize = builtCursorNativeSize
+        let cursorCanvasScale = max(
+            0,
+            project.cursor.scale * builtGeometry.canvasSize.height / 1_080
+        )
+        let halfViewportWidth = max(1, builtGeometry.screenRect.width / 2)
+        let halfViewportHeight = max(1, builtGeometry.screenRect.height / 2)
+        let cursorViewportInsets = CursorViewportInsets(
+            left: builtCursorHotSpot.x * cursorCanvasScale / halfViewportWidth,
+            right: (builtCursorNativeSize.width - builtCursorHotSpot.x)
+                * cursorCanvasScale / halfViewportWidth,
+            top: builtCursorHotSpot.y * cursorCanvasScale / halfViewportHeight,
+            bottom: (builtCursorNativeSize.height - builtCursorHotSpot.y)
+                * cursorCanvasScale / halfViewportHeight
+        )
         cameraEvaluator = CameraEvaluator(
             segments: project.zoomSegments.sorted { $0.startTime < $1.startTime },
             sourceSize: CGSize(
@@ -63,17 +86,20 @@ final class FrameCompositor {
                 height: project.recording.height
             ),
             duration: project.recording.duration,
-            cursorPath: builtCursorPath
+            cursorPath: builtCursorPath,
+            cursorViewportInsets: cursorViewportInsets
         )
         clickEvents = localizedEvents.filter { $0.isPrimaryClick && $0.position != nil }
 
         let renderedCursor = Self.makeCursorImage()
         cursorImage = renderedCursor
-        cursorHotSpot = CGPoint(x: 2, y: 2)
-        cursorNativeSize = CGSize(width: 32, height: 48)
     }
 
     var renderSize: CGSize { geometry.canvasSize }
+
+    func cameraState(at time: Double) -> CameraState {
+        cameraEvaluator.state(at: time)
+    }
 
     func render(sourceImage: CIImage, at compositionTime: CMTime) -> CIImage {
         let time = max(0, CMTimeGetSeconds(compositionTime))

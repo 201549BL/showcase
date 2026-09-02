@@ -467,8 +467,378 @@ struct MotionTests {
         #expect(outside.state(at: 3).focusPoint.x > 950)
     }
 
-    @Test("Rapid opposite-side cursor travel keeps the camera wider")
-    func distantCursorTravelUsesOverviewScale() {
+    @Test("Automatic camera keeps fast cursor travel inside the viewport")
+    func automaticCameraFramesFastCursorTravel() throws {
+        let sourceSize = CGSize(width: 1_600, height: 900)
+        let segment = ZoomSegment(
+            id: UUID(),
+            startTime: 0,
+            focusTime: 0.5,
+            endTime: 4,
+            focusPoint: CodablePoint(CGPoint(x: 800, y: 450)),
+            scale: 1.75,
+            source: .automatic
+        )
+        let path = cursorPath([
+            (0, 800, 450),
+            (1, 800, 450),
+            (1.001, 1_590, 450),
+            (4, 1_590, 450)
+        ])
+        let evaluator = CameraEvaluator(
+            segments: [segment],
+            sourceSize: sourceSize,
+            duration: 4,
+            cursorPath: path
+        )
+
+        for time in [1.001, 1.025, 1.05] {
+            let cursor = try #require(path.frame(at: time)?.position)
+            let camera = evaluator.state(at: time)
+            let halfWidth = sourceSize.width / (2 * camera.scale)
+            let halfHeight = sourceSize.height / (2 * camera.scale)
+            #expect(abs(cursor.x - camera.focusPoint.x) <= halfWidth + 0.001)
+            #expect(abs(cursor.y - camera.focusPoint.y) <= halfHeight + 0.001)
+        }
+    }
+
+    @Test("Automatic camera keeps the cursor visible while zooming out")
+    func automaticCameraFramesCursorDuringZoomOut() throws {
+        let sourceSize = CGSize(width: 1_600, height: 900)
+        let cursorInsets = CursorViewportInsets(
+            left: 2 / 960,
+            right: 30 / 960,
+            top: 2 / 540,
+            bottom: 46 / 540
+        )
+        let segment = ZoomSegment(
+            id: UUID(),
+            startTime: 0,
+            focusTime: 0.5,
+            endTime: 3,
+            focusPoint: CodablePoint(CGPoint(x: 800, y: 450)),
+            scale: 1.75,
+            source: .automatic,
+            transitionDuration: 0.5
+        )
+        let path = cursorPath([
+            (0, 1_575, 450),
+            (2.49, 1_575, 450),
+            (4, 1_575, 450)
+        ])
+        let evaluator = CameraEvaluator(
+            segments: [segment],
+            sourceSize: sourceSize,
+            duration: 4,
+            cursorPath: path,
+            cursorViewportInsets: cursorInsets
+        )
+
+        for time in stride(from: 2.5, through: 3.4, by: 1.0 / 60.0) {
+            let cursor = try #require(path.frame(at: time)?.position)
+            let camera = evaluator.state(at: time)
+            let halfWidth = sourceSize.width / (2 * camera.scale)
+            let safeRange = cursorInsets.horizontalRange(
+                halfExtent: halfWidth,
+                viewportFraction: 1
+            )
+            let cursorDelta = Double(cursor.x - camera.focusPoint.x)
+            #expect(cursorDelta >= safeRange.lowerBound - 0.001)
+            #expect(cursorDelta <= safeRange.upperBound + 0.001)
+        }
+    }
+
+    @Test("Automatic camera does not pan before the cursor moves")
+    func automaticCameraDoesNotLeadStationaryCursor() {
+        let sourceSize = CGSize(width: 1_600, height: 900)
+        let segment = ZoomSegment(
+            id: UUID(),
+            startTime: 0,
+            focusTime: 0.5,
+            endTime: 4,
+            focusPoint: CodablePoint(CGPoint(x: 800, y: 450)),
+            scale: 1.75,
+            source: .automatic
+        )
+        let path = cursorPath([
+            (0, 800, 450),
+            (0.99, 800, 450),
+            (1, 1_590, 450),
+            (4, 1_590, 450)
+        ])
+        let following = CameraEvaluator(
+            segments: [segment],
+            sourceSize: sourceSize,
+            duration: 4,
+            cursorPath: path
+        )
+        let plannedOnly = CameraEvaluator(
+            segments: [segment],
+            sourceSize: sourceSize,
+            duration: 4,
+            cursorPath: nil
+        )
+
+        #expect(following.state(at: 0.9) == plannedOnly.state(at: 0.9))
+        #expect(following.state(at: 0.98) == plannedOnly.state(at: 0.98))
+    }
+
+    @Test("Calm camera contains fast cursor travel without anticipatory zoom")
+    func calmCameraFramesFastCursorTravel() throws {
+        let sourceSize = CGSize(width: 1_600, height: 900)
+        let click = localized(time: 0.5, type: .leftMouseDown, x: 800, y: 450)
+        let segment = try #require(
+            AutoZoomPlanner(settings: .calm).plan(
+                events: [click],
+                sourceSize: sourceSize,
+                duration: 4
+            ).first
+        )
+        let path = cursorPath([
+            (0, 800, 450),
+            (1.1, 800, 450),
+            (1.2, 1_000, 450),
+            (1.3, 1_200, 450),
+            (1.4, 1_400, 450),
+            (1.5, 1_590, 450),
+            (2, 1_590, 450)
+        ])
+        let evaluator = CameraEvaluator(
+            segments: [segment],
+            sourceSize: sourceSize,
+            duration: 4,
+            cursorPath: path
+        )
+
+        #expect(abs((segment.focusTime - segment.startTime) - 0.9) < 0.001)
+        var poses: [NormalizedCameraPose] = []
+        for time in stride(from: 1.1, through: 1.6, by: 1.0 / 60.0) {
+            let cursor = try #require(path.frame(at: time)?.position)
+            let camera = evaluator.state(at: time)
+            poses.append(normalizedPose(camera, sourceSize: sourceSize))
+            let halfWidth = sourceSize.width / (2 * camera.scale)
+            let halfHeight = sourceSize.height / (2 * camera.scale)
+            #expect(abs(cursor.x - camera.focusPoint.x) <= halfWidth + 0.001)
+            #expect(abs(cursor.y - camera.focusPoint.y) <= halfHeight + 0.001)
+        }
+        let maximumTranslationStep = zip(poses, poses.dropFirst()).map {
+            hypot($1.x - $0.x, $1.y - $0.y)
+        }.max() ?? 0
+        #expect(maximumTranslationStep < 0.05)
+    }
+
+    @Test("Dense cursor travel accelerates and stops without a camera snap")
+    func denseCursorTravelStaysSmooth() throws {
+        let sourceSize = CGSize(width: 1_600, height: 900)
+        let click = localized(time: 0.5, type: .leftMouseDown, x: 800, y: 450)
+        let segment = try #require(
+            AutoZoomPlanner(settings: .calm).plan(
+                events: [click],
+                sourceSize: sourceSize,
+                duration: 4
+            ).first
+        )
+        var cursorEvents = [localized(time: 0, type: .mouseMoved, x: 800, y: 450)]
+        cursorEvents += (0...24).map { index in
+            let progress = Double(index) / 24
+            return localized(
+                time: 1.1 + (progress * 0.4),
+                type: .mouseMoved,
+                x: 800 + (progress * 790),
+                y: 450
+            )
+        }
+        cursorEvents.append(localized(time: 2, type: .mouseMoved, x: 1_590, y: 450))
+        let path = CursorPath(events: cursorEvents, smoothing: 0.65, hideAfter: 2)
+        let evaluator = CameraEvaluator(
+            segments: [segment],
+            sourceSize: sourceSize,
+            duration: 4,
+            cursorPath: path
+        )
+        let focusPositions = stride(from: 1.0, through: 1.7, by: 1.0 / 60.0).map {
+            Double(evaluator.state(at: $0).focusPoint.x)
+        }
+        let frameSteps = zip(focusPositions, focusPositions.dropFirst()).map {
+            $1 - $0
+        }
+        let velocities = frameSteps.map { $0 * 60 }
+        let accelerations = zip(velocities, velocities.dropFirst()).map {
+            abs($1 - $0) * 60
+        }
+
+        #expect((frameSteps.map(abs).max() ?? 0) < 30)
+        #expect((accelerations.max() ?? 0) < 30_000)
+        #expect(directionReversals(in: focusPositions, minimumStep: 0.25) == 0)
+    }
+
+    @Test("Cursor moving inward from an edge does not pull the camera back outward")
+    func inwardCursorTravelDoesNotReverseCamera() {
+        let sourceSize = CGSize(width: 1_600, height: 900)
+        let segment = ZoomSegment(
+            id: UUID(),
+            startTime: 0,
+            focusTime: 0.5,
+            endTime: 4,
+            focusPoint: CodablePoint(CGPoint(x: 800, y: 450)),
+            scale: 1.4,
+            source: .automatic
+        )
+        var cursorEvents = [localized(time: 0, type: .mouseMoved, x: 800, y: 450)]
+        cursorEvents += (0...24).map { index in
+            let progress = Double(index) / 24
+            return localized(
+                time: 1 + (progress * 0.4),
+                type: .mouseMoved,
+                x: 800 + (progress * 800),
+                y: 450
+            )
+        }
+        cursorEvents.append(localized(time: 1.9, type: .mouseMoved, x: 1_600, y: 450))
+        cursorEvents += (0...24).map { index in
+            let progress = Double(index) / 24
+            return localized(
+                time: 2 + (progress * 0.4),
+                type: .mouseMoved,
+                x: 1_600 - (progress * 800),
+                y: 450
+            )
+        }
+        let path = CursorPath(events: cursorEvents, smoothing: 0.65, hideAfter: 2)
+        let evaluator = CameraEvaluator(
+            segments: [segment],
+            sourceSize: sourceSize,
+            duration: 4,
+            cursorPath: path
+        )
+        let inwardFocusPositions = stride(from: 2.0, through: 2.5, by: 1.0 / 60.0).map {
+            Double(evaluator.state(at: $0).focusPoint.x)
+        }
+        let outwardSteps = zip(inwardFocusPositions, inwardFocusPositions.dropFirst()).map {
+            $1 - $0
+        }
+
+        #expect((outwardSteps.max() ?? 0) < 0.25)
+    }
+
+    @Test("Full-width cursor return re-engages the camera without an acceleration pulse")
+    func fullWidthCursorReturnStaysSmooth() {
+        let sourceSize = CGSize(width: 1_600, height: 900)
+        let segment = ZoomSegment(
+            id: UUID(),
+            startTime: 0,
+            focusTime: 0.5,
+            endTime: 5,
+            focusPoint: CodablePoint(CGPoint(x: 800, y: 450)),
+            scale: 1.4,
+            source: .automatic
+        )
+        var cursorEvents = [localized(time: 0, type: .mouseMoved, x: 800, y: 450)]
+        cursorEvents += (0...24).map { index in
+            let progress = Double(index) / 24
+            return localized(
+                time: 1 + (progress * 0.4),
+                type: .mouseMoved,
+                x: 800 + (progress * 800),
+                y: 450
+            )
+        }
+        cursorEvents.append(localized(time: 1.9, type: .mouseMoved, x: 1_600, y: 450))
+        cursorEvents += (0...48).map { index in
+            let progress = Double(index) / 48
+            return localized(
+                time: 2 + (progress * 0.8),
+                type: .mouseMoved,
+                x: 1_600 - (progress * 1_600),
+                y: 450
+            )
+        }
+        cursorEvents.append(localized(time: 3.3, type: .mouseMoved, x: 0, y: 450))
+        let path = CursorPath(events: cursorEvents, smoothing: 0.65, hideAfter: 2)
+        let evaluator = CameraEvaluator(
+            segments: [segment],
+            sourceSize: sourceSize,
+            duration: 5,
+            cursorPath: path
+        )
+        let focusPositions = stride(from: 2.0, through: 3.2, by: 1.0 / 60.0).map {
+            Double(evaluator.state(at: $0).focusPoint.x)
+        }
+        let frameSteps = zip(focusPositions, focusPositions.dropFirst()).map {
+            $1 - $0
+        }
+        let velocities = frameSteps.map { $0 * 60 }
+        let accelerations = zip(velocities, velocities.dropFirst()).map {
+            abs($1 - $0) * 60
+        }
+
+        #expect((frameSteps.max() ?? 0) < 0.25)
+        #expect((frameSteps.map(abs).max() ?? 0) < 30)
+        #expect((accelerations.max() ?? 0) < 35_000)
+    }
+
+    @Test("Invisible stale cursor positions do not steer a later shot")
+    func automaticCameraIgnoresInvisibleCursor() {
+        let sourceSize = CGSize(width: 1_600, height: 900)
+        let segment = ZoomSegment(
+            id: UUID(),
+            startTime: 2,
+            focusTime: 2.5,
+            endTime: 5,
+            focusPoint: CodablePoint(CGPoint(x: 800, y: 450)),
+            scale: 1.6,
+            source: .automatic
+        )
+        let path = CursorPath(
+            events: [localized(time: 0, type: .mouseMoved, x: 1_500, y: 450)],
+            smoothing: 0,
+            hideAfter: 0.2
+        )
+        let evaluator = CameraEvaluator(
+            segments: [segment],
+            sourceSize: sourceSize,
+            duration: 5,
+            cursorPath: path
+        )
+
+        #expect(abs(evaluator.state(at: 3).focusPoint.x - 800) < 2)
+    }
+
+    @Test("Camera follows the cursor until its current frame has faded")
+    func automaticCameraUsesCurrentCursorOpacity() throws {
+        let sourceSize = CGSize(width: 1_600, height: 900)
+        let segment = ZoomSegment(
+            id: UUID(),
+            startTime: 0,
+            focusTime: 0.5,
+            endTime: 3,
+            focusPoint: CodablePoint(CGPoint(x: 800, y: 450)),
+            scale: 1.75,
+            source: .automatic
+        )
+        let path = CursorPath(
+            events: [localized(time: 0, type: .mouseMoved, x: 1_590, y: 450)],
+            smoothing: 0,
+            hideAfter: 0.2
+        )
+        let evaluator = CameraEvaluator(
+            segments: [segment],
+            sourceSize: sourceSize,
+            duration: 3,
+            cursorPath: path
+        )
+
+        for time in [0.1, 0.3] {
+            let cursorFrame = try #require(path.frame(at: time))
+            #expect(cursorFrame.opacity > 0)
+            let camera = evaluator.state(at: time)
+            let halfWidth = sourceSize.width / (2 * camera.scale)
+            #expect(abs(cursorFrame.position.x - camera.focusPoint.x) <= halfWidth + 0.001)
+        }
+    }
+
+    @Test("Rapid opposite-side cursor travel does not pulse the zoom")
+    func distantCursorTravelKeepsShotScaleStable() {
         let sourceSize = CGSize(width: 1_600, height: 900)
         let segment = ZoomSegment(
             id: UUID(),
@@ -496,7 +866,80 @@ struct MotionTests {
             cursorPath: path
         )
 
-        #expect(evaluator.state(at: 2.7).scale < 1.5)
+        let scales = stride(from: 1.2, through: 3.2, by: 1.0 / 60.0).map {
+            evaluator.state(at: $0).scale
+        }
+
+        #expect((scales.max() ?? 0) - (scales.min() ?? 0) < 0.01)
+        #expect(abs((scales.last ?? 0) - segment.scale) < 0.01)
+    }
+
+    @Test("One-way cursor travel does not reverse the camera direction")
+    func oneWayCursorTravelDoesNotReverseCamera() {
+        let sourceSize = CGSize(width: 1_600, height: 900)
+        let segment = ZoomSegment(
+            id: UUID(),
+            startTime: 0,
+            focusTime: 0.5,
+            endTime: 4,
+            focusPoint: CodablePoint(CGPoint(x: 800, y: 450)),
+            scale: 1.75,
+            source: .automatic
+        )
+        let path = cursorPath([
+            (1, 800, 450),
+            (1.01, 1_500, 450)
+        ])
+        let followingEvaluator = CameraEvaluator(
+            segments: [segment],
+            sourceSize: sourceSize,
+            duration: 4,
+            cursorPath: path
+        )
+        let plannedOnlyEvaluator = CameraEvaluator(
+            segments: [segment],
+            sourceSize: sourceSize,
+            duration: 4,
+            cursorPath: nil
+        )
+        // Continue beyond the cursor fade, but stop before the shot's intended exit.
+        // Losing the followed anchor on fade used to make this pan back early.
+        let sampleTimes = stride(from: 1.0, through: 3.45, by: 1.0 / 60.0)
+        let followingStates = sampleTimes.map(followingEvaluator.state)
+        let plannedStates = sampleTimes.map(plannedOnlyEvaluator.state)
+        let followingFocusPositions = followingStates.map {
+            Double($0.focusPoint.x)
+        }
+        let plannedFocusPositions = plannedStates.map {
+            Double($0.focusPoint.x)
+        }
+        let followingRenderedPositions = followingStates.map {
+            normalizedPose($0, sourceSize: sourceSize).x
+        }
+        let plannedRenderedPositions = plannedStates.map {
+            normalizedPose($0, sourceSize: sourceSize).x
+        }
+        let followingFocusReversals = directionReversals(
+            in: followingFocusPositions,
+            minimumStep: 0.25
+        )
+        let plannedFocusReversals = directionReversals(
+            in: plannedFocusPositions,
+            minimumStep: 0.25
+        )
+        let followingRenderedReversals = directionReversals(
+            in: followingRenderedPositions,
+            minimumStep: 0.000_1
+        )
+        let plannedRenderedReversals = directionReversals(
+            in: plannedRenderedPositions,
+            minimumStep: 0.000_1
+        )
+
+        #expect(plannedFocusReversals == 0)
+        #expect(plannedRenderedReversals == 0)
+        #expect(followingFocusReversals == plannedFocusReversals)
+        #expect(followingRenderedReversals == plannedRenderedReversals)
     }
 
     @Test("Manual camera focus ignores cursor following")
@@ -712,6 +1155,19 @@ struct MotionTests {
             smoothing: 0,
             hideAfter: 2
         )
+    }
+
+    private func directionReversals(
+        in positions: [Double],
+        minimumStep: Double
+    ) -> Int {
+        let meaningfulDirections = zip(positions, positions.dropFirst())
+            .map { $1 - $0 }
+            .filter { abs($0) >= minimumStep }
+            .map { $0 > 0 ? 1 : -1 }
+        return zip(meaningfulDirections, meaningfulDirections.dropFirst())
+            .filter { $0 != $1 }
+            .count
     }
 
     private func secondDifference(

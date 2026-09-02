@@ -7,14 +7,22 @@ struct CanvasGeometry: Equatable {
     let scaledCornerRadius: Double
     let scaledShadowRadius: Double
 
-    init(project: RecordingProject, quality: ExportQuality) {
+    init(
+        project: RecordingProject,
+        quality: ExportQuality,
+        maximumCanvasDimension: Double? = nil
+    ) {
         let sourceSize = CGSize(
             width: project.recording.width,
             height: project.recording.height
         )
-        canvasSize = quality.canvasSize(
+        let qualityCanvasSize = quality.canvasSize(
             aspectRatio: project.canvas.aspectRatio,
             sourceSize: sourceSize
+        )
+        canvasSize = Self.scaledCanvasSize(
+            qualityCanvasSize,
+            maximumDimension: maximumCanvasDimension
         )
 
         let designScale = canvasSize.height / 1_080
@@ -39,6 +47,28 @@ struct CanvasGeometry: Equatable {
             width: fittedSize.width,
             height: fittedSize.height
         )
+    }
+
+    private static func scaledCanvasSize(
+        _ size: CGSize,
+        maximumDimension: Double?
+    ) -> CGSize {
+        guard
+            let maximumDimension,
+            maximumDimension > 0,
+            max(size.width, size.height) > maximumDimension
+        else { return size }
+
+        let scale = maximumDimension / max(size.width, size.height)
+        return CGSize(
+            width: even(size.width * scale),
+            height: even(size.height * scale)
+        )
+    }
+
+    private static func even(_ value: Double) -> Double {
+        let rounded = max(2, Int(value.rounded()))
+        return Double(rounded.isMultiple(of: 2) ? rounded : rounded + 1)
     }
 }
 

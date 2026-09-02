@@ -1,6 +1,63 @@
 import CoreGraphics
 import Foundation
 
+/// Cursor bitmap extents expressed as fractions of half the rendered viewport.
+/// The camera uses these asymmetric margins to keep the entire arrow visible,
+/// not just its hotspot.
+struct CursorViewportInsets: Equatable {
+    let left: Double
+    let right: Double
+    let top: Double
+    let bottom: Double
+
+    static let zero = CursorViewportInsets(left: 0, right: 0, top: 0, bottom: 0)
+
+    func horizontalRange(
+        halfExtent: Double,
+        viewportFraction: Double
+    ) -> ClosedRange<Double> {
+        Self.allowedRange(
+            halfExtent: halfExtent,
+            leadingInset: left,
+            trailingInset: right,
+            viewportFraction: viewportFraction
+        )
+    }
+
+    func verticalRange(
+        halfExtent: Double,
+        viewportFraction: Double
+    ) -> ClosedRange<Double> {
+        Self.allowedRange(
+            halfExtent: halfExtent,
+            leadingInset: top,
+            trailingInset: bottom,
+            viewportFraction: viewportFraction
+        )
+    }
+
+    private static func allowedRange(
+        halfExtent: Double,
+        leadingInset: Double,
+        trailingInset: Double,
+        viewportFraction: Double
+    ) -> ClosedRange<Double> {
+        let bitmapLowerBound = -halfExtent * (1 - leadingInset)
+        let bitmapUpperBound = halfExtent * (1 - trailingInset)
+        guard bitmapLowerBound <= bitmapUpperBound else {
+            let bestFit = (bitmapLowerBound + bitmapUpperBound) / 2
+            return bestFit...bestFit
+        }
+
+        let fraction = max(0, min(1, viewportFraction))
+        let lowerBound = max(bitmapLowerBound, -halfExtent * fraction)
+        let upperBound = min(bitmapUpperBound, halfExtent * fraction)
+        return lowerBound <= upperBound
+            ? lowerBound...upperBound
+            : bitmapLowerBound...bitmapUpperBound
+    }
+}
+
 struct CameraState: Equatable {
     let scale: Double
     let focusPoint: CGPoint
@@ -19,13 +76,15 @@ struct CameraEvaluator {
         segments: [ZoomSegment],
         sourceSize: CGSize,
         duration: Double? = nil,
-        cursorPath: CursorPath? = nil
+        cursorPath: CursorPath? = nil,
+        cursorViewportInsets: CursorViewportInsets = .zero
     ) {
         trajectory = CameraTrajectory(
             segments: segments,
             sourceSize: sourceSize,
             duration: duration,
-            cursorPath: cursorPath
+            cursorPath: cursorPath,
+            cursorViewportInsets: cursorViewportInsets
         )
     }
 
@@ -42,39 +101,34 @@ private struct CameraTrajectory {
         let springSettlingConstant = 4.75
         let maximumConnectedGap = 2.75
         let connectedTravelFraction = 0.5
-        let cursorLookAhead = 0.12
-        let travelZoneFraction = 0.72
-        let travelSettleFraction = 0.55
-        let distantTravelPadding = 0.2
-        let distantTravelHold = 0.55
-        let cursorFollowDuration = 0.6
+        let travelZoneFraction = 0.65
+        let cursorVisibilityOuterFraction = 1.0
+        let cursorFollowDuration = 0.35
+        let cursorFeedForwardRampDuration = 0.45
     }
 
     private struct Target {
         var state: CameraState
         var responseDuration: Double
         var segment: ZoomSegment?
+        var cursorVisibilitySegment: ZoomSegment?
     }
 
     private struct CursorFollower {
         var segmentID: UUID?
         var anchor: CGPoint?
-        var widenedScale: Double?
-        var keepWideUntil = 0.0
 
         mutating func adjust(
             _ target: Target,
-            currentState: CameraState,
             cursorPath: CursorPath?,
             at time: Double,
             sourceSize: CGSize,
+            viewportInsets: CursorViewportInsets,
             configuration: Configuration
         ) -> Target {
             guard
                 let segment = target.segment,
-                segment.source == .automatic,
-                let cursorPath,
-                let cursor = cursorPath.frame(at: time + configuration.cursorLookAhead)?.position
+                segment.source == .automatic
             else {
                 reset()
                 return target
@@ -83,57 +137,39 @@ private struct CameraTrajectory {
             if segmentID != segment.id {
                 segmentID = segment.id
                 anchor = target.state.focusPoint
-                widenedScale = nil
-                keepWideUntil = 0
             }
 
-            var adjusted = target
-            let requestedScale = max(1, target.state.scale)
-            let currentScale = max(1, currentState.scale)
-            let currentHalfWidth = sourceSize.width / (2 * currentScale)
-            let currentHalfHeight = sourceSize.height / (2 * currentScale)
-            let isDistant = abs(cursor.x - currentState.focusPoint.x) > currentHalfWidth * 0.92
-                || abs(cursor.y - currentState.focusPoint.y) > currentHalfHeight * 0.92
-
-            if isDistant {
-                let paddedWidth = abs(cursor.x - currentState.focusPoint.x)
-                    + sourceSize.width * configuration.distantTravelPadding
-                let paddedHeight = abs(cursor.y - currentState.focusPoint.y)
-                    + sourceSize.height * configuration.distantTravelPadding
-                let fittingScale = min(
-                    requestedScale,
-                    sourceSize.width / max(1, paddedWidth),
-                    sourceSize.height / max(1, paddedHeight)
+            guard
+                let cursorFrame = cursorPath?.frame(at: time),
+                cursorFrame.opacity > 0
+            else {
+                guard let anchor else { return target }
+                return adjustedTarget(
+                    target,
+                    anchor: anchor,
+                    sourceSize: sourceSize,
+                    configuration: configuration
                 )
-                widenedScale = min(
-                    widenedScale ?? requestedScale,
-                    max(1.08, fittingScale)
-                )
-                keepWideUntil = time + configuration.distantTravelHold
-            } else if time >= keepWideUntil {
-                widenedScale = nil
             }
 
-            let targetScale = widenedScale ?? requestedScale
             var targetAnchor = anchor ?? target.state.focusPoint
+            let targetScale = max(1, target.state.scale)
             let halfWidth = sourceSize.width / (2 * targetScale)
             let halfHeight = sourceSize.height / (2 * targetScale)
-            let horizontalDelta = cursor.x - targetAnchor.x
-            let verticalDelta = cursor.y - targetAnchor.y
-            var didMove = false
-
-            if abs(horizontalDelta) > halfWidth * configuration.travelZoneFraction {
-                targetAnchor.x = cursor.x
-                    - (horizontalDelta >= 0 ? 1 : -1)
-                    * halfWidth * configuration.travelSettleFraction
-                didMove = true
-            }
-            if abs(verticalDelta) > halfHeight * configuration.travelZoneFraction {
-                targetAnchor.y = cursor.y
-                    - (verticalDelta >= 0 ? 1 : -1)
-                    * halfHeight * configuration.travelSettleFraction
-                didMove = true
-            }
+            let horizontalDelta = cursorFrame.position.x - targetAnchor.x
+            let verticalDelta = cursorFrame.position.y - targetAnchor.y
+            let horizontalRange = viewportInsets.horizontalRange(
+                halfExtent: halfWidth,
+                viewportFraction: configuration.travelZoneFraction
+            )
+            let verticalRange = viewportInsets.verticalRange(
+                halfExtent: halfHeight,
+                viewportFraction: configuration.travelZoneFraction
+            )
+            targetAnchor.x = cursorFrame.position.x
+                - horizontalDelta.clamped(to: horizontalRange)
+            targetAnchor.y = cursorFrame.position.y
+                - verticalDelta.clamped(to: verticalRange)
 
             targetAnchor = CameraTrajectory.clampedFocus(
                 targetAnchor,
@@ -141,9 +177,31 @@ private struct CameraTrajectory {
                 scale: targetScale
             )
             anchor = targetAnchor
-            adjusted.state = CameraState(scale: targetScale, focusPoint: targetAnchor)
-            if didMove || widenedScale != nil || abs(targetScale - requestedScale) > 0.001 {
-                adjusted.responseDuration = max(
+
+            return adjustedTarget(
+                target,
+                anchor: targetAnchor,
+                sourceSize: sourceSize,
+                configuration: configuration
+            )
+        }
+
+        private func adjustedTarget(
+            _ target: Target,
+            anchor: CGPoint,
+            sourceSize: CGSize,
+            configuration: Configuration
+        ) -> Target {
+            let scale = max(1, target.state.scale)
+            let focus = CameraTrajectory.clampedFocus(
+                anchor,
+                sourceSize: sourceSize,
+                scale: scale
+            )
+            var adjusted = target
+            adjusted.state = CameraState(scale: scale, focusPoint: focus)
+            if focus.distance(to: target.state.focusPoint) > 0.5 {
+                adjusted.responseDuration = min(
                     adjusted.responseDuration,
                     configuration.cursorFollowDuration
                 )
@@ -154,29 +212,239 @@ private struct CameraTrajectory {
         mutating func reset() {
             segmentID = nil
             anchor = nil
-            widenedScale = nil
-            keepWideUntil = 0
+        }
+    }
+
+    private struct CursorVisibilityGuard {
+        var segmentID: UUID?
+        var previousCursorPosition: CGPoint?
+        var previousFocusPoint: CGPoint?
+        var previousPose: SpringPose?
+        var horizontalFollowAmount = 0.0
+        var verticalFollowAmount = 0.0
+
+        mutating func adjust(
+            _ spring: inout SpringVector,
+            target: Target,
+            cursorPath: CursorPath?,
+            at time: Double,
+            sourceSize: CGSize,
+            viewportInsets: CursorViewportInsets,
+            configuration: Configuration
+        ) {
+            guard
+                let segment = target.cursorVisibilitySegment,
+                segment.source == .automatic,
+                let cursorFrame = cursorPath?.frame(at: time),
+                cursorFrame.opacity > 0
+            else {
+                reset()
+                return
+            }
+
+            if segmentID != segment.id {
+                segmentID = segment.id
+                previousCursorPosition = nil
+                previousFocusPoint = nil
+                previousPose = nil
+                horizontalFollowAmount = 0
+                verticalFollowAmount = 0
+            }
+
+            let camera = spring.value.cameraState(sourceSize: sourceSize)
+            let halfWidth = sourceSize.width / (2 * camera.scale)
+            let halfHeight = sourceSize.height / (2 * camera.scale)
+            let horizontalDelta = cursorFrame.position.x - camera.focusPoint.x
+            let verticalDelta = cursorFrame.position.y - camera.focusPoint.y
+            let horizontalOuterRange = viewportInsets.horizontalRange(
+                halfExtent: halfWidth,
+                viewportFraction: configuration.cursorVisibilityOuterFraction
+            )
+            let verticalOuterRange = viewportInsets.verticalRange(
+                halfExtent: halfHeight,
+                viewportFraction: configuration.cursorVisibilityOuterFraction
+            )
+            let horizontalTravelRange = viewportInsets.horizontalRange(
+                halfExtent: halfWidth,
+                viewportFraction: configuration.travelZoneFraction
+            )
+            let verticalTravelRange = viewportInsets.verticalRange(
+                halfExtent: halfHeight,
+                viewportFraction: configuration.travelZoneFraction
+            )
+            let horizontalFocusRange = Double(halfWidth)...Double(sourceSize.width - halfWidth)
+            let verticalFocusRange = Double(halfHeight)...Double(sourceSize.height - halfHeight)
+            let horizontal = Self.adjustedAxis(
+                cursor: Double(cursorFrame.position.x),
+                springFocus: Double(camera.focusPoint.x),
+                springDelta: Double(horizontalDelta),
+                previousCursor: previousCursorPosition.map { Double($0.x) },
+                previousFocus: previousFocusPoint.map { Double($0.x) },
+                travelRange: horizontalTravelRange,
+                outerRange: horizontalOuterRange,
+                focusRange: horizontalFocusRange,
+                previousFollowAmount: horizontalFollowAmount,
+                deltaTime: 1 / configuration.sampleRate,
+                followRampDuration: configuration.cursorFeedForwardRampDuration
+            )
+            let vertical = Self.adjustedAxis(
+                cursor: Double(cursorFrame.position.y),
+                springFocus: Double(camera.focusPoint.y),
+                springDelta: Double(verticalDelta),
+                previousCursor: previousCursorPosition.map { Double($0.y) },
+                previousFocus: previousFocusPoint.map { Double($0.y) },
+                travelRange: verticalTravelRange,
+                outerRange: verticalOuterRange,
+                focusRange: verticalFocusRange,
+                previousFollowAmount: verticalFollowAmount,
+                deltaTime: 1 / configuration.sampleRate,
+                followRampDuration: configuration.cursorFeedForwardRampDuration
+            )
+            horizontalFollowAmount = horizontal.followAmount
+            verticalFollowAmount = vertical.followAmount
+
+            let constrainedFocus = CameraTrajectory.clampedFocus(
+                CGPoint(x: CGFloat(horizontal.focus), y: CGFloat(vertical.focus)),
+                sourceSize: sourceSize,
+                scale: camera.scale
+            )
+            spring.constrainPan(
+                to: constrainedFocus,
+                sourceSize: sourceSize,
+                previousPose: previousPose,
+                deltaTime: 1 / configuration.sampleRate,
+                matchHorizontalVelocity: horizontal.didAdjust,
+                matchVerticalVelocity: vertical.didAdjust
+            )
+            previousCursorPosition = cursorFrame.position
+            previousFocusPoint = constrainedFocus
+            previousPose = spring.value
+        }
+
+        private static func adjustedAxis(
+            cursor: Double,
+            springFocus: Double,
+            springDelta: Double,
+            previousCursor: Double?,
+            previousFocus: Double?,
+            travelRange: ClosedRange<Double>,
+            outerRange: ClosedRange<Double>,
+            focusRange: ClosedRange<Double>,
+            previousFollowAmount: Double,
+            deltaTime: Double,
+            followRampDuration: Double
+        ) -> (focus: Double, didAdjust: Bool, followAmount: Double) {
+            let followProgress = Self.followProgress(
+                for: springDelta,
+                travelRange: travelRange,
+                outerRange: outerRange
+            )
+            var candidateFocus = springFocus
+            var followAmount = 0.0
+            if
+                followProgress > 0,
+                let previousCursor,
+                let previousFocus,
+                Self.isMovingOutward(
+                    cursorStep: cursor - previousCursor,
+                    cursorDelta: springDelta,
+                    travelRange: travelRange
+                )
+            {
+                let cursorStep = cursor - previousCursor
+                let translatedFocus = previousFocus + (cursor - previousCursor)
+                let maximumFollowChange = deltaTime / max(deltaTime, followRampDuration)
+                followAmount = previousFollowAmount + (followProgress - previousFollowAmount)
+                    .clamped(to: -maximumFollowChange...maximumFollowChange)
+                let travelBlend = Self.smoothStep(followAmount)
+                let availablePan = cursorStep > 0
+                    ? focusRange.upperBound - springFocus
+                    : springFocus - focusRange.lowerBound
+                let taperDistance = max(1, (outerRange.upperBound - outerRange.lowerBound) * 0.18)
+                let boundaryBlend = Self.smoothStep(
+                    (availablePan / taperDistance).clamped(to: 0...1)
+                )
+                let blend = travelBlend * boundaryBlend
+                candidateFocus += (translatedFocus - candidateFocus) * blend
+            }
+
+            // An instantaneous cursor jump can still outrun the progressive
+            // feed-forward above. Correct only the minimum distance needed to
+            // keep the cursor visible; ordinary motion never reaches this rail.
+            let candidateDelta = cursor - candidateFocus
+            let constrainedDelta = candidateDelta.clamped(to: outerRange)
+            if constrainedDelta != candidateDelta {
+                candidateFocus = cursor - constrainedDelta
+            }
+            return (
+                candidateFocus,
+                abs(candidateFocus - springFocus) > 0.000_001,
+                followAmount
+            )
+        }
+
+        private static func isMovingOutward(
+            cursorStep: Double,
+            cursorDelta: Double,
+            travelRange: ClosedRange<Double>
+        ) -> Bool {
+            (cursorDelta < travelRange.lowerBound && cursorStep < -0.000_001)
+                || (cursorDelta > travelRange.upperBound && cursorStep > 0.000_001)
+        }
+
+        private static func smoothStep(_ value: Double) -> Double {
+            value * value * (3 - (2 * value))
+        }
+
+        private static func followProgress(
+            for delta: Double,
+            travelRange: ClosedRange<Double>,
+            outerRange: ClosedRange<Double>
+        ) -> Double {
+            if delta < travelRange.lowerBound {
+                let span = travelRange.lowerBound - outerRange.lowerBound
+                guard span > 0.000_001 else { return 1 }
+                return ((travelRange.lowerBound - delta) / span).clamped(to: 0...1)
+            }
+            if delta > travelRange.upperBound {
+                let span = outerRange.upperBound - travelRange.upperBound
+                guard span > 0.000_001 else { return 1 }
+                return ((delta - travelRange.upperBound) / span).clamped(to: 0...1)
+            }
+            return 0
+        }
+
+        private mutating func reset() {
+            segmentID = nil
+            previousCursorPosition = nil
+            previousFocusPoint = nil
+            previousPose = nil
+            horizontalFollowAmount = 0
+            verticalFollowAmount = 0
         }
     }
 
     private let sourceSize: CGSize
     private let sampleInterval: Double
     private let samples: [SpringPose]
+    private let configuration: Configuration
+    private let segments: [ZoomSegment]
+    private let cursorPath: CursorPath?
+    private let cursorViewportInsets: CursorViewportInsets
 
     init(
         segments: [ZoomSegment],
         sourceSize: CGSize,
         duration: Double?,
-        cursorPath: CursorPath?
+        cursorPath: CursorPath?,
+        cursorViewportInsets: CursorViewportInsets
     ) {
         self.sourceSize = sourceSize
         let configuration = Configuration()
+        self.configuration = configuration
+        self.cursorPath = cursorPath
+        self.cursorViewportInsets = cursorViewportInsets
         sampleInterval = 1 / configuration.sampleRate
-
-        guard sourceSize.width > 0, sourceSize.height > 0 else {
-            samples = [.overview]
-            return
-        }
 
         let sortedSegments = segments.sorted {
             if $0.startTime == $1.startTime {
@@ -184,6 +452,13 @@ private struct CameraTrajectory {
             }
             return $0.startTime < $1.startTime
         }
+        self.segments = sortedSegments
+
+        guard sourceSize.width > 0, sourceSize.height > 0 else {
+            samples = [.overview]
+            return
+        }
+
         let lastEnd = sortedSegments.map(\.endTime).max() ?? 0
         let longestTransition = sortedSegments
             .compactMap(\.transitionDuration)
@@ -195,6 +470,7 @@ private struct CameraTrajectory {
 
         var spring = SpringVector(value: .overview, velocity: .zero)
         var cursorFollower = CursorFollower()
+        var cursorVisibilityGuard = CursorVisibilityGuard()
         var builtSamples: [SpringPose] = []
         builtSamples.reserveCapacity(sampleCount + 1)
         builtSamples.append(spring.value)
@@ -209,10 +485,10 @@ private struct CameraTrajectory {
             )
             let target = cursorFollower.adjust(
                 baseTarget,
-                currentState: spring.value.cameraState(sourceSize: sourceSize),
                 cursorPath: cursorPath,
                 at: time,
                 sourceSize: sourceSize,
+                viewportInsets: cursorViewportInsets,
                 configuration: configuration
             )
             let responseDuration = max(
@@ -224,6 +500,17 @@ private struct CameraTrajectory {
                 toward: SpringPose(cameraState: target.state, sourceSize: sourceSize),
                 omega: omega,
                 deltaTime: sampleInterval
+            )
+            // The soft travel band progressively borrows the cursor's velocity.
+            // The outer edge remains a last-resort visibility constraint.
+            cursorVisibilityGuard.adjust(
+                &spring,
+                target: target,
+                cursorPath: cursorPath,
+                at: time,
+                sourceSize: sourceSize,
+                viewportInsets: cursorViewportInsets,
+                configuration: configuration
             )
             builtSamples.append(spring.value)
         }
@@ -245,7 +532,27 @@ private struct CameraTrajectory {
             to: samples[upperIndex],
             progress: fraction
         )
-        return pose.cameraState(sourceSize: sourceSize)
+        let state = pose.cameraState(sourceSize: sourceSize)
+        // Render requests can fall between trajectory samples, so enforce the
+        // same safety rail at the exact presentation time as the cursor overlay.
+        guard
+            Self.target(
+                at: time,
+                segments: segments,
+                sourceSize: sourceSize,
+                configuration: configuration
+            ).cursorVisibilitySegment?.source == .automatic,
+            let cursorFrame = cursorPath?.frame(at: time),
+            cursorFrame.opacity > 0
+        else { return state }
+
+        return Self.keepingVisible(
+            cursorFrame.position,
+            in: state,
+            sourceSize: sourceSize,
+            viewportFraction: 1,
+            viewportInsets: cursorViewportInsets
+        )
     }
 
     private static func target(
@@ -260,7 +567,8 @@ private struct CameraTrajectory {
                 focusPoint: CGPoint(x: sourceSize.width / 2, y: sourceSize.height / 2)
             ),
             responseDuration: configuration.defaultTransitionDuration,
-            segment: nil
+            segment: nil,
+            cursorVisibilitySegment: nil
         )
         guard !segments.isEmpty else { return overview }
 
@@ -283,7 +591,8 @@ private struct CameraTrajectory {
                         configuration.minimumTransitionDuration,
                         current.focusTime - current.startTime
                     ),
-                    segment: current
+                    segment: current,
+                    cursorVisibilitySegment: current
                 )
             }
 
@@ -299,14 +608,16 @@ private struct CameraTrajectory {
                         configuration.minimumTransitionDuration,
                         next.startTime - exitStart
                     ),
-                    segment: next
+                    segment: next,
+                    cursorVisibilitySegment: next
                 )
             }
 
             return Target(
                 state: overview.state,
                 responseDuration: exitDuration,
-                segment: nil
+                segment: nil,
+                cursorVisibilitySegment: current
             )
         }
 
@@ -322,7 +633,19 @@ private struct CameraTrajectory {
                     configuration.minimumTransitionDuration,
                     next.startTime - current.endTime
                 ),
-                segment: next
+                segment: next,
+                cursorVisibilitySegment: next
+            )
+        }
+
+        let exitDuration = current.transitionDuration
+            ?? configuration.defaultTransitionDuration
+        if time <= current.endTime + exitDuration {
+            return Target(
+                state: overview.state,
+                responseDuration: exitDuration,
+                segment: nil,
+                cursorVisibilitySegment: current
             )
         }
 
@@ -381,7 +704,7 @@ private struct CameraTrajectory {
         )
     }
 
-    private static func clampedFocus(
+    fileprivate static func clampedFocus(
         _ point: CGPoint,
         sourceSize: CGSize,
         scale: Double
@@ -393,11 +716,44 @@ private struct CameraTrajectory {
             y: min(sourceSize.height - halfHeight, max(halfHeight, point.y))
         )
     }
+
+    fileprivate static func keepingVisible(
+        _ point: CGPoint,
+        in camera: CameraState,
+        sourceSize: CGSize,
+        viewportFraction: Double,
+        viewportInsets: CursorViewportInsets
+    ) -> CameraState {
+        let halfWidth = sourceSize.width / (2 * camera.scale)
+        let halfHeight = sourceSize.height / (2 * camera.scale)
+        var focus = camera.focusPoint
+
+        let horizontalDelta = point.x - focus.x
+        let horizontalRange = viewportInsets.horizontalRange(
+            halfExtent: halfWidth,
+            viewportFraction: viewportFraction
+        )
+        focus.x = point.x - horizontalDelta.clamped(to: horizontalRange)
+        let verticalDelta = point.y - focus.y
+        let verticalRange = viewportInsets.verticalRange(
+            halfExtent: halfHeight,
+            viewportFraction: viewportFraction
+        )
+        focus.y = point.y - verticalDelta.clamped(to: verticalRange)
+
+        return CameraState(
+            scale: camera.scale,
+            focusPoint: clampedFocus(focus, sourceSize: sourceSize, scale: camera.scale)
+        )
+    }
 }
 
-/// A bounded camera pose. The unbounded pan parameters are mapped through tanh,
-/// which guarantees the sampled viewport never exposes pixels beyond the source.
+/// A bounded camera pose. Pan is represented as an angle and projected through
+/// sine, which reaches the source edge with a finite target while naturally
+/// reducing visible velocity there.
 private struct SpringPose {
+    fileprivate static let maximumPan = Double.pi / 2
+
     var horizontalPan: Double
     var verticalPan: Double
     var logScale: Double
@@ -428,15 +784,19 @@ private struct SpringPose {
         let normalizedVertical = scale
             * (center.y - cameraState.focusPoint.y)
             / sourceSize.height
-        horizontalPan = Self.inverseBoundedPan(normalizedHorizontal / limit)
-        verticalPan = Self.inverseBoundedPan(normalizedVertical / limit)
+        horizontalPan = asin((normalizedHorizontal / limit).clamped(to: -1...1))
+        verticalPan = asin((normalizedVertical / limit).clamped(to: -1...1))
     }
 
     func cameraState(sourceSize: CGSize) -> CameraState {
         let scale = max(1, exp(logScale))
         let limit = (scale - 1) / 2
-        let normalizedHorizontal = limit * tanh(horizontalPan)
-        let normalizedVertical = limit * tanh(verticalPan)
+        let normalizedHorizontal = limit * sin(
+            horizontalPan.clamped(to: -Self.maximumPan...Self.maximumPan)
+        )
+        let normalizedVertical = limit * sin(
+            verticalPan.clamped(to: -Self.maximumPan...Self.maximumPan)
+        )
         let center = CGPoint(x: sourceSize.width / 2, y: sourceSize.height / 2)
         return CameraState(
             scale: scale,
@@ -454,11 +814,6 @@ private struct SpringPose {
             logScale: logScale + (other.logScale - logScale) * progress
         )
     }
-
-    private static func inverseBoundedPan(_ value: Double) -> Double {
-        let bounded = max(-0.999_9, min(0.999_9, value))
-        return 0.5 * log((1 + bounded) / (1 - bounded))
-    }
 }
 
 private struct SpringVector {
@@ -470,20 +825,20 @@ private struct SpringVector {
         omega: Double,
         deltaTime: Double
     ) {
-        let horizontal = Self.advance(
+        let horizontal = Self.boundedPan(Self.advance(
             value: value.horizontalPan,
             velocity: velocity.horizontalPan,
             target: target.horizontalPan,
             omega: omega,
             deltaTime: deltaTime
-        )
-        let vertical = Self.advance(
+        ))
+        let vertical = Self.boundedPan(Self.advance(
             value: value.verticalPan,
             velocity: velocity.verticalPan,
             target: target.verticalPan,
             omega: omega,
             deltaTime: deltaTime
-        )
+        ))
         let zoom = Self.advance(
             value: value.logScale,
             velocity: velocity.logScale,
@@ -503,6 +858,37 @@ private struct SpringVector {
         )
     }
 
+    mutating func constrainPan(
+        to focusPoint: CGPoint,
+        sourceSize: CGSize,
+        previousPose: SpringPose?,
+        deltaTime: Double,
+        matchHorizontalVelocity: Bool,
+        matchVerticalVelocity: Bool
+    ) {
+        let camera = value.cameraState(sourceSize: sourceSize)
+        let constrained = SpringPose(
+            cameraState: CameraState(scale: camera.scale, focusPoint: focusPoint),
+            sourceSize: sourceSize
+        )
+        let horizontalCorrection = constrained.horizontalPan - value.horizontalPan
+        let verticalCorrection = constrained.verticalPan - value.verticalPan
+        value.horizontalPan = constrained.horizontalPan
+        value.verticalPan = constrained.verticalPan
+        if matchHorizontalVelocity, let previousPose, deltaTime > 0 {
+            velocity.horizontalPan = (constrained.horizontalPan - previousPose.horizontalPan)
+                / deltaTime
+        } else if horizontalCorrection * velocity.horizontalPan < 0 {
+            velocity.horizontalPan = 0
+        }
+        if matchVerticalVelocity, let previousPose, deltaTime > 0 {
+            velocity.verticalPan = (constrained.verticalPan - previousPose.verticalPan)
+                / deltaTime
+        } else if verticalCorrection * velocity.verticalPan < 0 {
+            velocity.verticalPan = 0
+        }
+    }
+
     private static func advance(
         value: Double,
         velocity: Double,
@@ -517,5 +903,30 @@ private struct SpringVector {
             target + (offset + coefficient * deltaTime) * decay,
             (velocity - omega * coefficient * deltaTime) * decay
         )
+    }
+
+    private static func boundedPan(
+        _ result: (value: Double, velocity: Double)
+    ) -> (value: Double, velocity: Double) {
+        let limit = SpringPose.maximumPan
+        if result.value < -limit {
+            return (-limit, result.velocity < 0 ? 0 : result.velocity)
+        }
+        if result.value > limit {
+            return (limit, result.velocity > 0 ? 0 : result.velocity)
+        }
+        return result
+    }
+}
+
+private extension Double {
+    func clamped(to range: ClosedRange<Double>) -> Double {
+        min(range.upperBound, max(range.lowerBound, self))
+    }
+}
+
+private extension CGFloat {
+    func clamped(to range: ClosedRange<Double>) -> CGFloat {
+        CGFloat(Double(self).clamped(to: range))
     }
 }

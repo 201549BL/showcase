@@ -25,10 +25,12 @@ struct VideoCompositionBuilder {
         quality: ExportQuality,
         purpose: Purpose = .export
     ) -> BuiltVideoComposition {
+        let maximumCanvasDimension: Double? = purpose == .preview ? 1_280 : nil
         let compositor = FrameCompositor(
             project: project,
             events: events,
-            quality: quality
+            quality: quality,
+            maximumCanvasDimension: maximumCanvasDimension
         )
         let composition = AVMutableVideoComposition(
             asset: asset,
@@ -43,10 +45,6 @@ struct VideoCompositionBuilder {
         composition.renderSize = compositor.renderSize
         composition.sourceTrackIDForFrameTiming = kCMPersistentTrackID_Invalid
         composition.frameDuration = CMTime(value: 1, timescale: 60)
-        if purpose == .preview {
-            let longestEdge = max(composition.renderSize.width, composition.renderSize.height)
-            composition.renderScale = Float(min(1, 1_280 / max(1, longestEdge)))
-        }
         return BuiltVideoComposition(composition: composition, compositor: compositor)
     }
 }
