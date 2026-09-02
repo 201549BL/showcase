@@ -2,6 +2,8 @@ import CoreGraphics
 import Foundation
 
 struct CursorPath {
+    private static let maximumInterpolationGap = 0.12
+
     struct Keyframe: Equatable {
         let timestamp: Double
         let rawPosition: CGPoint
@@ -11,6 +13,7 @@ struct CursorPath {
 
     struct Frame: Equatable {
         let position: CGPoint
+        let rawPosition: CGPoint
         let opacity: Double
     }
 
@@ -43,18 +46,43 @@ struct CursorPath {
 
         let upperIndex = keyframes.partitioningIndex { $0.timestamp > time }
         if upperIndex == 0 {
-            return Frame(position: keyframes[0].position, opacity: 0)
+            return Frame(
+                position: keyframes[0].position,
+                rawPosition: keyframes[0].rawPosition,
+                opacity: 0
+            )
         }
 
         let previous = keyframes[upperIndex - 1]
         let position: CGPoint
+        let rawPosition: CGPoint
         if upperIndex < keyframes.count {
             let next = keyframes[upperIndex]
             let interval = next.timestamp - previous.timestamp
-            let progress = interval > 0 ? max(0, min(1, (time - previous.timestamp) / interval)) : 0
-            position = previous.position.interpolated(to: next.position, progress: progress)
+            if interval > 0, interval <= Self.maximumInterpolationGap {
+                let progress = max(0, min(1, (time - previous.timestamp) / interval))
+                position = previous.position.interpolated(to: next.position, progress: progress)
+                rawPosition = previous.rawPosition.interpolated(
+                    to: next.rawPosition,
+                    progress: progress
+                )
+            } else {
+                // A long event gap represents a resting cursor. Interpolating
+                // toward the next event would make that movement begin too
+                // early. Only let the existing smoothing lag settle to the
+                // last position we actually observed.
+                position = Self.settledPosition(
+                    after: previous,
+                    elapsed: time - previous.timestamp
+                )
+                rawPosition = previous.rawPosition
+            }
         } else {
-            position = previous.position
+            position = Self.settledPosition(
+                after: previous,
+                elapsed: time - previous.timestamp
+            )
+            rawPosition = previous.rawPosition
         }
 
         let idleTime = max(0, time - previous.timestamp)
@@ -65,34 +93,43 @@ struct CursorPath {
             opacity = max(0, 1 - ((idleTime - hideAfter) / fadeDuration))
         }
 
-        return Frame(position: position, opacity: opacity)
+        return Frame(position: position, rawPosition: rawPosition, opacity: opacity)
     }
 
     private static func smooth(samples: [RawSample], amount: Double) -> [Keyframe] {
-        guard samples.count > 1 else {
-            return samples.map {
-                Keyframe(
-                    timestamp: $0.timestamp,
-                    rawPosition: $0.position,
-                    position: $0.position,
-                    isClickAnchor: $0.isClickAnchor
-                )
-            }
-        }
-
         let clampedAmount = max(0, min(1, amount))
-        guard clampedAmount > 0 else {
-            return samples.map {
-                Keyframe(
-                    timestamp: $0.timestamp,
-                    rawPosition: $0.position,
-                    position: $0.position,
-                    isClickAnchor: $0.isClickAnchor
-                )
-            }
+        guard samples.count > 1, clampedAmount > 0 else {
+            return rawKeyframes(for: samples)
         }
 
         let timeConstant = 0.015 + (0.11 * clampedAmount)
+        var keyframes: [Keyframe] = []
+        keyframes.reserveCapacity(samples.count)
+        var burstStart = samples.startIndex
+
+        for boundary in 1...samples.count {
+            let startsNewBurst = boundary == samples.endIndex
+                || samples[boundary].timestamp - samples[boundary - 1].timestamp
+                    > maximumInterpolationGap
+            guard startsNewBurst else { continue }
+
+            keyframes.append(contentsOf: smoothBurst(
+                Array(samples[burstStart..<boundary]),
+                timeConstant: timeConstant
+            ))
+            burstStart = boundary
+        }
+        return keyframes
+    }
+
+    private static func smoothBurst(
+        _ samples: [RawSample],
+        timeConstant: Double
+    ) -> [Keyframe] {
+        guard samples.count > 1 else {
+            return rawKeyframes(for: samples)
+        }
+
         var forward = samples.map(\.position)
         var backward = samples.map(\.position)
 
@@ -114,19 +151,62 @@ struct CursorPath {
             )
         }
 
+        let firstZeroPhase = CGPoint(
+            x: (forward[0].x + backward[0].x) / 2,
+            y: (forward[0].y + backward[0].y) / 2
+        )
+        // The backward pass can pull the first frames toward future motion.
+        // Decaying its startup error with the filter's own time constant keeps
+        // the burst continuous without reintroducing steady-state cursor lag.
+        let initialError = CGPoint(
+            x: samples[0].position.x - firstZeroPhase.x,
+            y: samples[0].position.y - firstZeroPhase.y
+        )
+
         return samples.indices.map { index in
             let sample = samples[index]
-            let filtered = CGPoint(
+            let zeroPhase = CGPoint(
                 x: (forward[index].x + backward[index].x) / 2,
                 y: (forward[index].y + backward[index].y) / 2
+            )
+            let elapsed = max(0, sample.timestamp - samples[0].timestamp)
+            let startupDecay = exp(-elapsed / timeConstant)
+            let filtered = CGPoint(
+                x: zeroPhase.x + (initialError.x * startupDecay),
+                y: zeroPhase.y + (initialError.y * startupDecay)
             )
             return Keyframe(
                 timestamp: sample.timestamp,
                 rawPosition: sample.position,
-                position: sample.isClickAnchor ? sample.position : filtered,
+                position: sample.isClickAnchor || index == samples.startIndex
+                    ? sample.position
+                    : filtered,
                 isClickAnchor: sample.isClickAnchor
             )
         }
+    }
+
+    private static func rawKeyframes(for samples: [RawSample]) -> [Keyframe] {
+        samples.map {
+            Keyframe(
+                timestamp: $0.timestamp,
+                rawPosition: $0.position,
+                position: $0.position,
+                isClickAnchor: $0.isClickAnchor
+            )
+        }
+    }
+
+    private static func settledPosition(
+        after keyframe: Keyframe,
+        elapsed: Double
+    ) -> CGPoint {
+        let progress = max(0, min(1, elapsed / maximumInterpolationGap))
+        let easedProgress = progress * progress * (3 - (2 * progress))
+        return keyframe.position.interpolated(
+            to: keyframe.rawPosition,
+            progress: easedProgress
+        )
     }
 }
 

@@ -102,6 +102,11 @@ private struct CameraTrajectory {
         let maximumConnectedGap = 2.75
         let connectedTravelFraction = 0.5
         let travelZoneFraction = 0.65
+        // A settled cursor must cross this wider line before movement is
+        // considered intentional. The target then takes over continuously.
+        let cursorFollowActivationFraction = 0.72
+        let cursorIntentRestDuration = 0.12
+        let cursorIntentTakeoverDuration = 0.12
         let cursorVisibilityOuterFraction = 1.0
         let cursorFollowDuration = 0.35
         let cursorFeedForwardRampDuration = 0.45
@@ -112,11 +117,181 @@ private struct CameraTrajectory {
         var responseDuration: Double
         var segment: ZoomSegment?
         var cursorVisibilitySegment: ZoomSegment?
+        var cursorSteeringPosition: CGPoint? = nil
     }
 
     private struct CursorFollower {
-        var segmentID: UUID?
+        private struct AxisIntentGate {
+            private enum Phase {
+                case quiet
+                case takeover
+                case tracking
+            }
+
+            private let movementEpsilon = 0.000_001
+
+            private var phase = Phase.quiet
+            private var isInitialized = false
+            private var previousActual = 0.0
+            private var previousRaw = 0.0
+            private var quietReference = 0.0
+            private var heldSteering = 0.0
+            private var negativeSlop = 0.0
+            private var positiveSlop = 0.0
+            private var takeoverOrigin = 0.0
+            private var takeoverStart = 0.0
+            private var stationaryDuration = 0.0
+
+            mutating func position(
+                for actual: Double,
+                rawPosition: Double,
+                at time: Double,
+                negativeSlop currentNegativeSlop: Double,
+                positiveSlop currentPositiveSlop: Double,
+                isOutsideSafetyRange: Bool,
+                deltaTime: Double,
+                takeoverDuration: Double,
+                restDuration: Double
+            ) -> Double {
+                guard isInitialized else {
+                    armQuiet(
+                        at: actual,
+                        negativeSlop: currentNegativeSlop,
+                        positiveSlop: currentPositiveSlop
+                    )
+                    previousActual = actual
+                    previousRaw = rawPosition
+                    isInitialized = true
+                    return actual
+                }
+
+                let rawCursorStep = rawPosition - previousRaw
+                let isStationary = abs(rawCursorStep) <= movementEpsilon
+                previousActual = actual
+                previousRaw = rawPosition
+
+                if isOutsideSafetyRange {
+                    phase = .tracking
+                    heldSteering = actual
+                    stationaryDuration = 0
+                    return actual
+                }
+
+                switch phase {
+                case .quiet:
+                    let displacement = actual - quietReference
+                    guard displacement > positiveSlop || displacement < -negativeSlop else {
+                        return heldSteering
+                    }
+                    phase = .takeover
+                    takeoverOrigin = heldSteering
+                    takeoverStart = time
+                    stationaryDuration = isStationary ? deltaTime : 0
+                    return heldSteering
+
+                case .takeover:
+                    updateStationaryDuration(
+                        isStationary: isStationary,
+                        deltaTime: deltaTime
+                    )
+                    let progress = ((time - takeoverStart) / max(deltaTime, takeoverDuration))
+                        .clamped(to: 0...1)
+                    let blend = Self.smootherStep(progress)
+                    heldSteering = takeoverOrigin + ((actual - takeoverOrigin) * blend)
+                    if progress >= 1 {
+                        heldSteering = actual
+                        if stationaryDuration >= restDuration {
+                            armQuiet(
+                                at: actual,
+                                negativeSlop: currentNegativeSlop,
+                                positiveSlop: currentPositiveSlop
+                            )
+                        } else {
+                            phase = .tracking
+                        }
+                    }
+                    return heldSteering
+
+                case .tracking:
+                    heldSteering = actual
+                    updateStationaryDuration(
+                        isStationary: isStationary,
+                        deltaTime: deltaTime
+                    )
+                    if stationaryDuration >= restDuration {
+                        armQuiet(
+                            at: actual,
+                            negativeSlop: currentNegativeSlop,
+                            positiveSlop: currentPositiveSlop
+                        )
+                    }
+                    return heldSteering
+                }
+            }
+
+            mutating func reset() {
+                phase = .quiet
+                isInitialized = false
+                previousActual = 0
+                previousRaw = 0
+                quietReference = 0
+                heldSteering = 0
+                negativeSlop = 0
+                positiveSlop = 0
+                takeoverOrigin = 0
+                takeoverStart = 0
+                stationaryDuration = 0
+            }
+
+            mutating func suspend() {
+                guard isInitialized, phase != .quiet else { return }
+                phase = .quiet
+                quietReference = previousActual
+                stationaryDuration = 0
+            }
+
+            mutating func refreshQuietSlop(
+                negative: Double,
+                positive: Double
+            ) {
+                guard isInitialized, phase == .quiet else { return }
+                negativeSlop = max(0, negative)
+                positiveSlop = max(0, positive)
+            }
+
+            private mutating func armQuiet(
+                at position: Double,
+                negativeSlop: Double,
+                positiveSlop: Double
+            ) {
+                phase = .quiet
+                quietReference = position
+                heldSteering = position
+                self.negativeSlop = max(0, negativeSlop)
+                self.positiveSlop = max(0, positiveSlop)
+                stationaryDuration = 0
+            }
+
+            private mutating func updateStationaryDuration(
+                isStationary: Bool,
+                deltaTime: Double
+            ) {
+                stationaryDuration = isStationary
+                    ? stationaryDuration + deltaTime
+                    : 0
+            }
+
+            private static func smootherStep(_ value: Double) -> Double {
+                value * value * value * (value * ((value * 6) - 15) + 10)
+            }
+        }
+
+        var persistentSegmentID: UUID?
         var anchor: CGPoint?
+        private var hasAutomaticContext = false
+        private var needsQuietSlopRefresh = false
+        private var horizontalIntentGate = AxisIntentGate()
+        private var verticalIntentGate = AxisIntentGate()
 
         mutating func adjust(
             _ target: Target,
@@ -127,23 +302,38 @@ private struct CameraTrajectory {
             configuration: Configuration
         ) -> Target {
             guard
-                let segment = target.segment,
+                let segment = target.cursorVisibilitySegment,
                 segment.source == .automatic
             else {
                 reset()
                 return target
             }
 
-            if segmentID != segment.id {
-                segmentID = segment.id
+            if !hasAutomaticContext {
+                hasAutomaticContext = true
+                horizontalIntentGate.reset()
+                verticalIntentGate.reset()
+            }
+            let persistentSegment = target.segment.flatMap {
+                $0.source == .automatic ? $0 : nil
+            }
+            let followsPersistentTarget = persistentSegment != nil
+            let changedPersistentSegment = persistentSegment.map {
+                persistentSegmentID != $0.id
+            } ?? false
+            if let persistentSegment, changedPersistentSegment {
+                persistentSegmentID = persistentSegment.id
                 anchor = target.state.focusPoint
+                needsQuietSlopRefresh = true
             }
 
             guard
                 let cursorFrame = cursorPath?.frame(at: time),
                 cursorFrame.opacity > 0
             else {
-                guard let anchor else { return target }
+                horizontalIntentGate.suspend()
+                verticalIntentGate.suspend()
+                guard followsPersistentTarget, let anchor else { return target }
                 return adjustedTarget(
                     target,
                     anchor: anchor,
@@ -153,11 +343,12 @@ private struct CameraTrajectory {
             }
 
             var targetAnchor = anchor ?? target.state.focusPoint
-            let targetScale = max(1, target.state.scale)
+            let targetScale = max(
+                1,
+                followsPersistentTarget ? target.state.scale : segment.scale
+            )
             let halfWidth = sourceSize.width / (2 * targetScale)
             let halfHeight = sourceSize.height / (2 * targetScale)
-            let horizontalDelta = cursorFrame.position.x - targetAnchor.x
-            let verticalDelta = cursorFrame.position.y - targetAnchor.y
             let horizontalRange = viewportInsets.horizontalRange(
                 halfExtent: halfWidth,
                 viewportFraction: configuration.travelZoneFraction
@@ -166,10 +357,69 @@ private struct CameraTrajectory {
                 halfExtent: halfHeight,
                 viewportFraction: configuration.travelZoneFraction
             )
-            targetAnchor.x = cursorFrame.position.x
-                - horizontalDelta.clamped(to: horizontalRange)
-            targetAnchor.y = cursorFrame.position.y
-                - verticalDelta.clamped(to: verticalRange)
+            let horizontalActivationRange = viewportInsets.horizontalRange(
+                halfExtent: halfWidth,
+                viewportFraction: configuration.cursorFollowActivationFraction
+            )
+            let verticalActivationRange = viewportInsets.verticalRange(
+                halfExtent: halfHeight,
+                viewportFraction: configuration.cursorFollowActivationFraction
+            )
+            let horizontalNegativeSlop = horizontalRange.lowerBound
+                - horizontalActivationRange.lowerBound
+            let horizontalPositiveSlop = horizontalActivationRange.upperBound
+                - horizontalRange.upperBound
+            let verticalNegativeSlop = verticalRange.lowerBound
+                - verticalActivationRange.lowerBound
+            let verticalPositiveSlop = verticalActivationRange.upperBound
+                - verticalRange.upperBound
+            if needsQuietSlopRefresh {
+                horizontalIntentGate.refreshQuietSlop(
+                    negative: horizontalNegativeSlop,
+                    positive: horizontalPositiveSlop
+                )
+                verticalIntentGate.refreshQuietSlop(
+                    negative: verticalNegativeSlop,
+                    positive: verticalPositiveSlop
+                )
+                needsQuietSlopRefresh = false
+            }
+            let horizontalOuterRange = viewportInsets.horizontalRange(
+                halfExtent: halfWidth,
+                viewportFraction: configuration.cursorVisibilityOuterFraction
+            )
+            let verticalOuterRange = viewportInsets.verticalRange(
+                halfExtent: halfHeight,
+                viewportFraction: configuration.cursorVisibilityOuterFraction
+            )
+            let horizontalCursorDelta = Double(cursorFrame.position.x - targetAnchor.x)
+            let verticalCursorDelta = Double(cursorFrame.position.y - targetAnchor.y)
+            let steeringX = horizontalIntentGate.position(
+                for: Double(cursorFrame.position.x),
+                rawPosition: Double(cursorFrame.rawPosition.x),
+                at: time,
+                negativeSlop: horizontalNegativeSlop,
+                positiveSlop: horizontalPositiveSlop,
+                isOutsideSafetyRange: !horizontalOuterRange.contains(horizontalCursorDelta),
+                deltaTime: 1 / configuration.sampleRate,
+                takeoverDuration: configuration.cursorIntentTakeoverDuration,
+                restDuration: configuration.cursorIntentRestDuration
+            )
+            let steeringY = verticalIntentGate.position(
+                for: Double(cursorFrame.position.y),
+                rawPosition: Double(cursorFrame.rawPosition.y),
+                at: time,
+                negativeSlop: verticalNegativeSlop,
+                positiveSlop: verticalPositiveSlop,
+                isOutsideSafetyRange: !verticalOuterRange.contains(verticalCursorDelta),
+                deltaTime: 1 / configuration.sampleRate,
+                takeoverDuration: configuration.cursorIntentTakeoverDuration,
+                restDuration: configuration.cursorIntentRestDuration
+            )
+            targetAnchor.x = steeringX
+                - (steeringX - Double(targetAnchor.x)).clamped(to: horizontalRange)
+            targetAnchor.y = steeringY
+                - (steeringY - Double(targetAnchor.y)).clamped(to: verticalRange)
 
             targetAnchor = CameraTrajectory.clampedFocus(
                 targetAnchor,
@@ -178,12 +428,16 @@ private struct CameraTrajectory {
             )
             anchor = targetAnchor
 
-            return adjustedTarget(
-                target,
-                anchor: targetAnchor,
-                sourceSize: sourceSize,
-                configuration: configuration
-            )
+            var adjusted = followsPersistentTarget
+                ? adjustedTarget(
+                    target,
+                    anchor: targetAnchor,
+                    sourceSize: sourceSize,
+                    configuration: configuration
+                )
+                : target
+            adjusted.cursorSteeringPosition = CGPoint(x: steeringX, y: steeringY)
+            return adjusted
         }
 
         private func adjustedTarget(
@@ -210,8 +464,12 @@ private struct CameraTrajectory {
         }
 
         mutating func reset() {
-            segmentID = nil
+            persistentSegmentID = nil
             anchor = nil
+            hasAutomaticContext = false
+            needsQuietSlopRefresh = false
+            horizontalIntentGate.reset()
+            verticalIntentGate.reset()
         }
     }
 
@@ -254,8 +512,9 @@ private struct CameraTrajectory {
             let camera = spring.value.cameraState(sourceSize: sourceSize)
             let halfWidth = sourceSize.width / (2 * camera.scale)
             let halfHeight = sourceSize.height / (2 * camera.scale)
-            let horizontalDelta = cursorFrame.position.x - camera.focusPoint.x
-            let verticalDelta = cursorFrame.position.y - camera.focusPoint.y
+            let steeringPosition = target.cursorSteeringPosition ?? cursorFrame.position
+            let horizontalDelta = steeringPosition.x - camera.focusPoint.x
+            let verticalDelta = steeringPosition.y - camera.focusPoint.y
             let horizontalOuterRange = viewportInsets.horizontalRange(
                 halfExtent: halfWidth,
                 viewportFraction: configuration.cursorVisibilityOuterFraction
@@ -275,7 +534,8 @@ private struct CameraTrajectory {
             let horizontalFocusRange = Double(halfWidth)...Double(sourceSize.width - halfWidth)
             let verticalFocusRange = Double(halfHeight)...Double(sourceSize.height - halfHeight)
             let horizontal = Self.adjustedAxis(
-                cursor: Double(cursorFrame.position.x),
+                steeringCursor: Double(steeringPosition.x),
+                actualCursor: Double(cursorFrame.position.x),
                 springFocus: Double(camera.focusPoint.x),
                 springDelta: Double(horizontalDelta),
                 previousCursor: previousCursorPosition.map { Double($0.x) },
@@ -288,7 +548,8 @@ private struct CameraTrajectory {
                 followRampDuration: configuration.cursorFeedForwardRampDuration
             )
             let vertical = Self.adjustedAxis(
-                cursor: Double(cursorFrame.position.y),
+                steeringCursor: Double(steeringPosition.y),
+                actualCursor: Double(cursorFrame.position.y),
                 springFocus: Double(camera.focusPoint.y),
                 springDelta: Double(verticalDelta),
                 previousCursor: previousCursorPosition.map { Double($0.y) },
@@ -316,13 +577,14 @@ private struct CameraTrajectory {
                 matchHorizontalVelocity: horizontal.didAdjust,
                 matchVerticalVelocity: vertical.didAdjust
             )
-            previousCursorPosition = cursorFrame.position
+            previousCursorPosition = steeringPosition
             previousFocusPoint = constrainedFocus
             previousPose = spring.value
         }
 
         private static func adjustedAxis(
-            cursor: Double,
+            steeringCursor: Double,
+            actualCursor: Double,
             springFocus: Double,
             springDelta: Double,
             previousCursor: Double?,
@@ -346,13 +608,13 @@ private struct CameraTrajectory {
                 let previousCursor,
                 let previousFocus,
                 Self.isMovingOutward(
-                    cursorStep: cursor - previousCursor,
+                    cursorStep: steeringCursor - previousCursor,
                     cursorDelta: springDelta,
                     travelRange: travelRange
                 )
             {
-                let cursorStep = cursor - previousCursor
-                let translatedFocus = previousFocus + (cursor - previousCursor)
+                let cursorStep = steeringCursor - previousCursor
+                let translatedFocus = previousFocus + cursorStep
                 let maximumFollowChange = deltaTime / max(deltaTime, followRampDuration)
                 followAmount = previousFollowAmount + (followProgress - previousFollowAmount)
                     .clamped(to: -maximumFollowChange...maximumFollowChange)
@@ -371,10 +633,10 @@ private struct CameraTrajectory {
             // An instantaneous cursor jump can still outrun the progressive
             // feed-forward above. Correct only the minimum distance needed to
             // keep the cursor visible; ordinary motion never reaches this rail.
-            let candidateDelta = cursor - candidateFocus
+            let candidateDelta = actualCursor - candidateFocus
             let constrainedDelta = candidateDelta.clamped(to: outerRange)
             if constrainedDelta != candidateDelta {
-                candidateFocus = cursor - constrainedDelta
+                candidateFocus = actualCursor - constrainedDelta
             }
             return (
                 candidateFocus,
