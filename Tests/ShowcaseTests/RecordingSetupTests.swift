@@ -6,6 +6,55 @@ import Testing
 @Suite("Recording setup")
 @MainActor
 struct RecordingSetupTests {
+    @Test("First launch keeps the default recording settings")
+    func initialRecordingPreferences() throws {
+        let suiteName = "ShowcaseTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let model = AppModel(userDefaults: defaults)
+
+        #expect(model.includesSystemAudio)
+        #expect(!model.includesMicrophone)
+        #expect(!model.includesCamera)
+        #expect(model.selectedCameraID == nil)
+        #expect(model.selectedMicrophoneID == nil)
+    }
+
+    @Test("Recording toggles and devices survive reopening, including turning them off again")
+    func recordingPreferencesSurviveReopening() throws {
+        let suiteName = "ShowcaseTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let model = AppModel(userDefaults: defaults)
+        model.includesSystemAudio = false
+        model.includesMicrophone = true
+        model.includesCamera = true
+        model.selectedCameraID = "external-camera"
+        model.selectedMicrophoneID = "external-microphone"
+
+        let reopened = AppModel(userDefaults: try #require(UserDefaults(suiteName: suiteName)))
+        #expect(!reopened.includesSystemAudio)
+        #expect(reopened.includesMicrophone)
+        #expect(reopened.includesCamera)
+        #expect(reopened.selectedCameraID == "external-camera")
+        #expect(reopened.selectedMicrophoneID == "external-microphone")
+
+        reopened.includesSystemAudio = true
+        reopened.includesMicrophone = false
+        reopened.includesCamera = false
+        reopened.selectedCameraID = nil
+        reopened.selectedMicrophoneID = nil
+
+        let reset = AppModel(userDefaults: try #require(UserDefaults(suiteName: suiteName)))
+        #expect(reset.includesSystemAudio)
+        #expect(!reset.includesMicrophone)
+        #expect(!reset.includesCamera)
+        #expect(reset.selectedCameraID == nil)
+        #expect(reset.selectedMicrophoneID == nil)
+    }
+
     @Test("Countdown announces three beats before starting capture once")
     func countdownCompletes() async {
         let countdown = RecordingCountdown(sleep: { await Task.yield() })

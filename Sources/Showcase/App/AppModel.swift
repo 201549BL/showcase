@@ -6,11 +6,21 @@ import Foundation
 final class AppModel: ObservableObject {
     @Published private(set) var sources: [AvailableCaptureSource] = []
     @Published var selectedSourceID: String?
-    @Published var includesSystemAudio = true
-    @Published var includesMicrophone = false
-    @Published var includesCamera = false
-    @Published var selectedCameraID: String?
-    @Published var selectedMicrophoneID: String?
+    @Published var includesSystemAudio: Bool {
+        didSet { userDefaults.set(includesSystemAudio, forKey: RecordingPreference.systemAudio) }
+    }
+    @Published var includesMicrophone: Bool {
+        didSet { userDefaults.set(includesMicrophone, forKey: RecordingPreference.microphone) }
+    }
+    @Published var includesCamera: Bool {
+        didSet { userDefaults.set(includesCamera, forKey: RecordingPreference.camera) }
+    }
+    @Published var selectedCameraID: String? {
+        didSet { userDefaults.set(selectedCameraID, forKey: RecordingPreference.cameraID) }
+    }
+    @Published var selectedMicrophoneID: String? {
+        didSet { userDefaults.set(selectedMicrophoneID, forKey: RecordingPreference.microphoneID) }
+    }
     @Published private(set) var countdownRemaining: Int?
     @Published private(set) var sourceThumbnails: [String: NSImage] = [:]
     @Published private(set) var thumbnailErrors: Set<String> = []
@@ -31,17 +41,25 @@ final class AppModel: ObservableObject {
     private let sourceService: CaptureSourceService
     private let coordinator: RecordingCoordinator
     private let privacyPermissions: any PrivacyPermissionClient
+    private let userDefaults: UserDefaults
     private var elapsedTask: Task<Void, Never>?
     private var recordingStartedAt: Date?
 
     init(
         sourceService: CaptureSourceService = CaptureSourceService(),
         coordinator: RecordingCoordinator = RecordingCoordinator(),
-        privacyPermissions: any PrivacyPermissionClient = SystemPrivacyPermissionClient()
+        privacyPermissions: any PrivacyPermissionClient = SystemPrivacyPermissionClient(),
+        userDefaults: UserDefaults = .standard
     ) {
         self.sourceService = sourceService
         self.coordinator = coordinator
         self.privacyPermissions = privacyPermissions
+        self.userDefaults = userDefaults
+        includesSystemAudio = userDefaults.object(forKey: RecordingPreference.systemAudio) as? Bool ?? true
+        includesMicrophone = userDefaults.bool(forKey: RecordingPreference.microphone)
+        includesCamera = userDefaults.bool(forKey: RecordingPreference.camera)
+        selectedCameraID = userDefaults.string(forKey: RecordingPreference.cameraID)
+        selectedMicrophoneID = userDefaults.string(forKey: RecordingPreference.microphoneID)
         hasInputMonitoringPermission = privacyPermissions.hasInputMonitoringAccess()
         hasScreenRecordingPermission = privacyPermissions.hasScreenRecordingAccess()
         let startupProjectPath = ProcessInfo.processInfo.environment["SHOWCASE_PROJECT"]
@@ -244,6 +262,14 @@ final class AppModel: ObservableObject {
         )
     }
 
+}
+
+private enum RecordingPreference {
+    static let systemAudio = "recording.includesSystemAudio"
+    static let microphone = "recording.includesMicrophone"
+    static let camera = "recording.includesCamera"
+    static let cameraID = "recording.cameraDeviceID"
+    static let microphoneID = "recording.microphoneDeviceID"
 }
 
 struct PresentedError: Identifiable {
