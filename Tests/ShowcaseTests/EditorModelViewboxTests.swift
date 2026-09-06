@@ -8,6 +8,30 @@ import Testing
 
 @Suite("Editor viewbox interaction")
 struct EditorModelViewboxTests {
+    @Test("Image backgrounds save, undo, redo, and switch back to gradients")
+    @MainActor
+    func backgroundImageHistory() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = try await makeFixture(in: root)
+        let imageURL = root.appendingPathComponent("Background.png")
+        try writeBackgroundFixture(to: imageURL)
+        model.applyBackgroundImage(at: imageURL)
+        let image = try #require(model.project.canvas.backgroundImage)
+        #expect(model.presentedError == nil)
+        model.undo()
+        #expect(model.project.canvas.backgroundImage == nil)
+        model.redo()
+        #expect(model.project.canvas.backgroundImage == image)
+        model.applyBackground(.ocean)
+        #expect(model.project.canvas.backgroundImage == nil)
+        model.undo()
+        #expect(model.project.canvas.backgroundImage == image)
+        let reopened = try EditorModel(projectURL: model.projectURL)
+        #expect(reopened.project.canvas.backgroundImage == image)
+        #expect(reopened.backgroundImageURL.flatMap { BackgroundImages.image(at: $0) } != nil)
+    }
+
     @Test("Dragging the viewbox does not replace the player item while editing")
     @MainActor
     func viewboxEditKeepsPlayerStable() async throws {

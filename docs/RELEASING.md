@@ -68,7 +68,7 @@ For an initial review before notarization is complete, create a **draft** releas
 
 ## Icon
 
-`Resources/AppIcon.icns` is generated from the vector drawing in `scripts/generate-icon.swift`:
+`Resources/AppIcon.png` contains the approved liquid-glass artwork. `scripts/generate-icon.swift` packages it with transparent Dock margins at all standard and Retina resolutions into `Resources/AppIcon.icns`:
 
 ```bash
 swift scripts/generate-icon.swift

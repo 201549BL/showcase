@@ -141,6 +141,7 @@ struct CanvasSettings: Codable, Equatable {
     var shadowRadius: Double
     var backgroundStartHex: String
     var backgroundEndHex: String
+    var backgroundImage: BackgroundImageAsset? = nil
 
     static let `default` = CanvasSettings(
         aspectRatio: .landscape,

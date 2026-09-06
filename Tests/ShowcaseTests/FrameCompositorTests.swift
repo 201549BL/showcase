@@ -272,7 +272,8 @@ struct FrameCompositorTests {
         let talking = area(automatic, at: 0.5)
         let focused = area(automatic, at: 2.5)
         #expect(talking > 0)
-        #expect(Double(talking) > Double(focused) * 1.7)
+        let retainedArea = Double(focused) / Double(talking)
+        #expect(retainedArea > 0.68 && retainedArea < 0.78)
         #expect(area(automatic, at: 4.5) == talking)
         project.suppressedAutomaticCameraZoomIDs = [project.zoomSegments[0].id]
         let removed = FrameCompositor(project: project, events: [], quality: .hd, cameraFrameProvider: camera)
@@ -612,6 +613,124 @@ struct FrameCompositorTests {
             #expect(export.composition.renderSize == expectedExportSize)
             #expect(export.compositor.renderSize == expectedExportSize)
             #expect(export.composition.renderScale == 1)
+        }
+    }
+
+    @Test("Zoom moves the entire recording card without reshaping its frame in preview and export")
+    func zoomCardRendering() {
+        var project = fixtureProject()
+        project.recording.duration = 7
+        project.canvas.padding = 100
+        project.canvas.cornerRadius = 32
+        project.canvas.shadowRadius = 24
+        project.canvas.backgroundStartHex = "FF0000"
+        project.canvas.backgroundEndHex = "FF0000"
+        project.motionBlur = .disabled
+        project.zoomSegments = [ZoomSegment(id: UUID(), startTime: 1, focusTime: 1.5, endTime: 4,
+            focusPoint: CodablePoint(CGPoint(x: 240, y: 110)), scale: 1.95, source: .manual)]
+        let source = CIImage(color: .blue).cropped(to: CGRect(x: 0, y: 0, width: 320, height: 180))
+        for aspect in [CanvasSettings.AspectRatio.landscape, .square, .vertical] {
+            project.canvas.aspectRatio = aspect
+            for cap: Double? in [nil, 640] {
+                let compositor = FrameCompositor(project: project, events: [], quality: .hd, maximumCanvasDimension: cap)
+                let geometry = CanvasGeometry(project: project, quality: .hd, maximumCanvasDimension: cap)
+                let canvas = CGRect(origin: .zero, size: compositor.renderSize)
+                func frame(_ time: Double) -> CIImage {
+                    compositor.render(sourceImage: source, at: CMTime(seconds: time, preferredTimescale: 600))
+                }
+                let overview = frame(0)
+                for time in [1.15, 2.0, 3.9] {
+                    let camera = compositor.cameraState(at: time)
+                    let focusInCard = CGPoint(
+                        x: geometry.screenRect.minX + camera.focusPoint.x / 320 * geometry.screenRect.width,
+                        y: geometry.screenRect.minY + (1 - camera.focusPoint.y / 180) * geometry.screenRect.height
+                    )
+                    // A physical camera move is equivalent to scaling the complete overview
+                    // about its focus, with the unchanged background behind it.
+                    let expected = overview.transformed(by: CGAffineTransform(
+                        a: camera.scale, b: 0, c: 0, d: camera.scale,
+                        tx: canvas.midX - focusInCard.x * camera.scale,
+                        ty: canvas.midY - focusInCard.y * camera.scale
+                    )).composited(over: CIImage(color: .red)).cropped(to: canvas)
+                    let actualPixels = rgbaPixels(in: frame(time))
+                    let expectedPixels = rgbaPixels(in: expected)
+                    let matching = zip(actualPixels, expectedPixels).filter { abs(Int($0) - Int($1)) <= 2 }.count
+                    #expect(Double(matching) / Double(actualPixels.count) > 0.995)
+                }
+                #expect(rgbaPixels(in: frame(6)) == rgbaPixels(in: overview))
+                let focused = rgbaPixels(in: frame(2))
+                _ = frame(0)
+                #expect(rgbaPixels(in: frame(2)) == focused)
+            }
+        }
+    }
+
+    @Test("Moving a portrait recording card keeps an off-center automatic cursor visible")
+    func zoomCardCursorVisibility() {
+        var project = fixtureProject()
+        project.recording.duration = 5
+        project.canvas.aspectRatio = .vertical
+        project.canvas.padding = 100
+        project.cursor.smoothing = 0
+        project.cursor.hideAfter = 10
+        project.cursor.showsClickAnimation = false
+        project.motionBlur = .disabled
+        project.zoomSegments = [ZoomSegment(id: UUID(), startTime: 1, focusTime: 1.5, endTime: 4,
+            focusPoint: CodablePoint(CGPoint(x: 160, y: 90)), scale: 1.95, source: .automatic)]
+        let source = CIImage(color: .blue).cropped(to: CGRect(x: 0, y: 0, width: 320, height: 180))
+        func cursorArea(x: Double, y: Double) -> Int {
+            let events = [cursorEvent(timestamp: 1, x: x, y: y)]
+            let compositor = FrameCompositor(project: project, events: events, quality: .hd, maximumCanvasDimension: 640)
+            var hiddenCursor = project
+            hiddenCursor.cursor.scale = 0
+            let baseline = FrameCompositor(project: hiddenCursor, events: events, quality: .hd, maximumCanvasDimension: 640)
+            let time = CMTime(seconds: 2, preferredTimescale: 600)
+            let pixels = rgbaPixels(in: compositor.render(sourceImage: source, at: time))
+            let baselinePixels = rgbaPixels(in: baseline.render(sourceImage: source, at: time))
+            // Count cursor pixels on the blue recording only, excluding the moving card edges.
+            var count = 0
+            for index in stride(from: 0, to: pixels.count, by: 4) {
+                let isRecording = baselinePixels[index] < 5
+                    && baselinePixels[index + 1] < 5 && baselinePixels[index + 2] > 250
+                let isCursor = pixels[index] > 30
+                    || pixels[index + 1] > 30 || pixels[index + 2] < 225
+                if isRecording && isCursor { count += 1 }
+            }
+            return count
+        }
+        let centered = cursorArea(x: 160, y: 90)
+        #expect(centered > 0)
+        for (x, y) in [(285.0, 160.0), (35.0, 20.0)] {
+            #expect(Double(cursorArea(x: x, y: y)) >= Double(centered) * 0.9)
+        }
+    }
+
+    @Test("Image backgrounds fill the canvas with a centered crop in both preview and export")
+    func imageBackgroundRendering() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let original = root.appendingPathComponent("wide.png")
+        try writeBackgroundFixture(to: original)
+        var project = fixtureProject()
+        project.canvas.backgroundImage = try BackgroundImages.importImage(at: original, into: root)
+        let source = CIImage(color: .black).cropped(to: CGRect(x: 0, y: 0, width: 320, height: 180))
+        for aspect in [CanvasSettings.AspectRatio.landscape, .square, .vertical] {
+            project.canvas.aspectRatio = aspect
+            for purpose in [VideoCompositionBuilder.Purpose.preview, .export] {
+                let built = VideoCompositionBuilder().build(asset: AVMutableComposition(), project: project,
+                    events: [], quality: .hd, purpose: purpose, projectURL: root)
+                let frame = built.compositor.render(sourceImage: source, at: .zero)
+                let pixels = rgbaPixels(in: frame)
+                let width = Int(built.compositor.renderSize.width)
+                let height = Int(built.compositor.renderSize.height)
+                for (x, y) in [(1, 1), (width - 2, 1), (1, height - 2), (width - 2, height - 2)] {
+                    let index = (y * width + x) * 4
+                    #expect(pixels[index] < 10 && pixels[index + 1] > 240 && pixels[index + 2] < 10)
+                }
+                let center = ((height / 2) * width + width / 2) * 4
+                #expect(pixels[center + 1] < 10)
+            }
         }
     }
 

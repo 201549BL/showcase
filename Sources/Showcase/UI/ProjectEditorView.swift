@@ -5,6 +5,7 @@ struct ProjectEditorView: View {
     @ObservedObject var model: EditorModel
     let onClose: () -> Void
     @State private var category = "Frame"
+    @State private var showingWallpapers = false
     @State private var showingExport = false
     @State private var sidebarWidth: CGFloat = 310
     @State private var sidebarResizeStart: CGFloat?
@@ -43,6 +44,11 @@ struct ProjectEditorView: View {
                 .coordinateSpace(name: "editor-panes")
             }
             timelinePane
+        }
+        .sheet(isPresented: $showingWallpapers) {
+            DesktopWallpaperPicker { wallpaper in
+                model.applyBackgroundImage(at: wallpaper.url, name: wallpaper.name)
+            }
         }
         .onAppear { model.selectedZoomID = nil; model.selectedCameraID = nil }
         .background(EditorPlaybackShortcuts(model: model))
@@ -433,6 +439,28 @@ struct ProjectEditorView: View {
                             .accessibilityAddTraits(isSelectedBackground(preset) ? [.isSelected] : [])
                     }
                 }
+                HStack(spacing: 8) {
+                    Button(action: model.chooseBackgroundImage) {
+                        Label("Choose image…", systemImage: "photo.badge.plus")
+                    }
+                    Button { showingWallpapers = true } label: {
+                        Label("Desktop…", systemImage: "desktopcomputer")
+                    }
+                }
+                .controlSize(.small)
+                if let asset = model.project.canvas.backgroundImage,
+                   let url = model.backgroundImageURL {
+                    HStack(spacing: 10) {
+                        BackgroundImageThumbnail(url: url)
+                        Text(asset.name).font(.callout).lineLimit(2)
+                        Spacer(minLength: 0)
+                        Button {
+                            model.editProject(actionName: "Remove Background Image") { $0.canvas.backgroundImage = nil }
+                        } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                        .buttonStyle(.plain).help("Remove image background")
+                        .accessibilityLabel("Remove image background")
+                    }
+                }
             }
             slider("Padding", value: binding(\.canvas.padding, actionName: "Change Padding"),
                    range: 0...160, actionName: "Change Padding", unit: .pixels)
@@ -669,7 +697,8 @@ struct ProjectEditorView: View {
     }
 
     private func isSelectedBackground(_ preset: BackgroundPreset) -> Bool {
-        model.project.canvas.backgroundStartHex == preset.startHex
+        model.project.canvas.backgroundImage == nil
+            && model.project.canvas.backgroundStartHex == preset.startHex
             && model.project.canvas.backgroundEndHex == preset.endHex
     }
 
@@ -716,5 +745,26 @@ private extension Color {
             green: Double((value >> 8) & 0xFF) / 255,
             blue: Double(value & 0xFF) / 255
         )
+    }
+}
+
+private struct BackgroundImageThumbnail: View {
+    let url: URL
+    @State private var image: NSImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image).resizable().scaledToFill()
+            } else {
+                Rectangle().fill(.quaternary)
+            }
+        }
+        .frame(width: 60, height: 40)
+        .clipShape(RoundedRectangle(cornerRadius: 7))
+        .task(id: url) {
+            image = BackgroundImages.image(at: url, maximumDimension: 160)
+                .map { NSImage(cgImage: $0, size: .zero) }
+        }
     }
 }

@@ -25,7 +25,8 @@ final class FrameCompositor {
         events: [RecordedInputEvent],
         quality: ExportQuality,
         maximumCanvasDimension: Double? = nil,
-        cameraFrameProvider: CameraFrameProviding? = nil
+        cameraFrameProvider: CameraFrameProviding? = nil,
+        backgroundImageURL: URL? = nil
     ) {
         var project = project
         project.synchronizeCameraEffects()
@@ -51,7 +52,8 @@ final class FrameCompositor {
         )
         backgroundImage = Self.makeBackground(
             canvasRect: builtCanvasRect,
-            canvas: project.canvas
+            canvas: project.canvas,
+            imageURL: backgroundImageURL
         )
 
         let localizedEvents = InputEventLocalizer().localize(
@@ -125,39 +127,16 @@ final class FrameCompositor {
 
     func render(sourceImage: CIImage, at compositionTime: CMTime) -> CIImage {
         let time = max(0, CMTimeGetSeconds(compositionTime))
-        let sourceSize = CGSize(
-            width: project.recording.width,
-            height: project.recording.height
-        )
-        let camera = cameraEvaluator.state(at: time)
-        let transform = cameraTransform(camera, sourceSize: sourceSize)
-
         let normalizedSource = sourceImage.transformed(
             by: CGAffineTransform(
                 translationX: -sourceImage.extent.minX,
                 y: -sourceImage.extent.minY
             )
         )
-        var screenContent = motionBlurredScreenContent(
+        var composedFrame = motionBlurredScreenContent(
             sourceImage: normalizedSource,
             at: time
         )
-
-        if project.cursor.showsClickAnimation,
-           let clickRing = renderClickRing(at: time, cameraTransform: transform) {
-            screenContent = clickRing.composited(over: screenContent)
-        }
-
-        let clippedScreen = screenContent.applyingFilter(
-            "CIBlendWithMask",
-            parameters: [
-                kCIInputBackgroundImageKey: transparentCanvas,
-                kCIInputMaskImageKey: screenMask
-            ]
-        )
-
-        var composedFrame = clippedScreen
-            .composited(over: shadowImage)
             .composited(over: backgroundImage)
             .cropped(to: canvasRect)
         if let cameraOverlay = renderCameraOverlay(at: compositionTime) {
@@ -335,7 +314,29 @@ final class FrameCompositor {
             let cursor = renderCursor(frame: cursorFrame, cameraTransform: transform)
             content = cursor.composited(over: content)
         }
-        return content
+        if project.cursor.showsClickAnimation,
+           let clickRing = renderClickRing(at: time, cameraTransform: transform) {
+            content = clickRing.composited(over: content)
+        }
+
+        // Move the authored recording card as one layer. Its mask and shadow keep
+        // their proportions and leave the canvas naturally as the camera approaches.
+        let layerTransform = CGAffineTransform(
+            a: camera.scale, b: 0, c: 0, d: camera.scale,
+            tx: transform.tx - geometry.screenRect.minX * camera.scale,
+            ty: transform.ty - geometry.screenRect.minY * camera.scale
+        )
+        let mask = screenMask.transformed(by: layerTransform)
+        let clipped = content.applyingFilter(
+            "CIBlendWithMask",
+            parameters: [
+                kCIInputBackgroundImageKey: transparentCanvas,
+                kCIInputMaskImageKey: mask
+            ]
+        )
+        return clipped
+            .composited(over: shadowImage.transformed(by: layerTransform))
+            .cropped(to: canvasRect)
     }
 
     private func hasMotion(from startTime: Double, to endTime: Double) -> Bool {
@@ -479,15 +480,26 @@ final class FrameCompositor {
 
     private static func makeBackground(
         canvasRect: CGRect,
-        canvas: CanvasSettings
+        canvas: CanvasSettings,
+        imageURL: URL?
     ) -> CIImage {
         let filter = CIFilter.linearGradient()
         filter.point0 = CGPoint(x: 0, y: 0)
         filter.point1 = CGPoint(x: canvasRect.maxX, y: canvasRect.maxY)
         filter.color0 = CIColor(hex: canvas.backgroundStartHex)
         filter.color1 = CIColor(hex: canvas.backgroundEndHex)
-        return filter.outputImage?.cropped(to: canvasRect)
+        let gradient = filter.outputImage?.cropped(to: canvasRect)
             ?? CIImage(color: CIColor(red: 0.2, green: 0.2, blue: 0.22)).cropped(to: canvasRect)
+        guard let imageURL,
+              let image = BackgroundImages.image(at: imageURL, maximumDimension: Int(max(canvasRect.width, canvasRect.height)))
+        else { return gradient }
+        let source = CIImage(cgImage: image)
+        let scale = max(canvasRect.width / source.extent.width, canvasRect.height / source.extent.height)
+        return source.transformed(by: CGAffineTransform(
+            a: scale, b: 0, c: 0, d: scale,
+            tx: canvasRect.midX - source.extent.midX * scale,
+            ty: canvasRect.midY - source.extent.midY * scale
+        )).composited(over: gradient).cropped(to: canvasRect)
     }
 
     private static func makeShadow(
@@ -509,7 +521,6 @@ final class FrameCompositor {
                 parameters: [kCIInputRadiusKey: geometry.scaledShadowRadius]
             )
             .transformed(by: CGAffineTransform(translationX: 0, y: -geometry.scaledShadowRadius * 0.3))
-            .cropped(to: canvasRect)
     }
 
     private static func roundedRectangle(

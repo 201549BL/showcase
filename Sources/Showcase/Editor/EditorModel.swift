@@ -557,9 +557,32 @@ final class EditorModel: ObservableObject {
 
     func applyBackground(_ preset: BackgroundPreset) {
         editProject(actionName: "Change Background") { project in
+            project.canvas.backgroundImage = nil
             project.canvas.backgroundStartHex = preset.startHex
             project.canvas.backgroundEndHex = preset.endHex
         }
+    }
+
+    var backgroundImageURL: URL? {
+        BackgroundImages.url(for: project.canvas.backgroundImage, in: projectURL)
+    }
+
+    func chooseBackgroundImage() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose a background image"
+        panel.prompt = "Use Image"
+        panel.allowedContentTypes = [.image]
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        applyBackgroundImage(at: url)
+    }
+
+    func applyBackgroundImage(at url: URL, name: String? = nil) {
+        do {
+            let asset = try BackgroundImages.importImage(at: url, into: projectURL, name: name)
+            editProject(actionName: "Change Background") { $0.canvas.backgroundImage = asset }
+        } catch { present(error) }
     }
 
     func beginHistoryTransaction(actionName: String) {
@@ -658,7 +681,8 @@ final class EditorModel: ObservableObject {
             purpose: .preview,
             cameraVideoURL: !isEditingViewbox && project.recording.cameraVideoRelativePath != nil
                 ? locations.cameraVideoURL
-                : nil
+                : nil,
+            projectURL: projectURL
         )
         let item = AVPlayerItem(asset: asset)
         item.videoComposition = built.composition

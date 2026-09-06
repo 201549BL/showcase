@@ -45,7 +45,8 @@ final class VideoExporter {
             quality: quality,
             cameraVideoURL: project.recording.cameraVideoRelativePath == nil
                 ? nil
-                : locations.cameraVideoURL
+                : locations.cameraVideoURL,
+            projectURL: projectURL
         )
 
         guard let session = AVAssetExportSession(

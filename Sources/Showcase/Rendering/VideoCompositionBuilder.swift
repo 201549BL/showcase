@@ -24,7 +24,8 @@ struct VideoCompositionBuilder {
         events: [RecordedInputEvent],
         quality: ExportQuality,
         purpose: Purpose = .export,
-        cameraVideoURL: URL? = nil
+        cameraVideoURL: URL? = nil,
+        projectURL: URL? = nil
     ) -> BuiltVideoComposition {
         let maximumCanvasDimension: Double? = purpose == .preview ? 1_280 : nil
         let compositor = FrameCompositor(
@@ -32,7 +33,8 @@ struct VideoCompositionBuilder {
             events: events,
             quality: quality,
             maximumCanvasDimension: maximumCanvasDimension,
-            cameraFrameProvider: cameraVideoURL.map(AssetCameraFrameProvider.init)
+            cameraFrameProvider: cameraVideoURL.map(AssetCameraFrameProvider.init),
+            backgroundImageURL: BackgroundImages.url(for: project.canvas.backgroundImage, in: projectURL)
         )
         let composition = AVMutableVideoComposition(
             asset: asset,

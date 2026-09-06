@@ -27,7 +27,15 @@ struct CameraOverlaySizingTests {
         #expect(overview == 0.28)
         #expect(normalZoom < overview)
         #expect(closeUp < normalZoom)
-        #expect(abs(closeUp - 0.1904) < 0.00001)
+        #expect(abs(closeUp - 0.238) < 0.00001)
+        // Large authored bubbles should receive the same proportional reduction.
+        var large = settings
+        large.size = 0.6
+        #expect(CameraOverlaySizing.size(settings: large, cameraScale: 1,
+                                         requiresContentClearance: false) == large.size)
+        let largeCloseUp = CameraOverlaySizing.size(settings: large, cameraScale: 2.5,
+                                                    requiresContentClearance: false)
+        #expect(abs(largeCloseUp / large.size - closeUp / overview) < 0.00001)
     }
 
     @Test("Adaptive camera makes extra room for an important cursor path")
