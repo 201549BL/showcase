@@ -200,9 +200,10 @@ final class FrameCompositor {
                     ty: rect.minY - cropRect.minY * scale
                 )
             )
+        let cameraCornerRadius = diameter * 0.25
         let mask = Self.roundedRectangle(
             rect: rect,
-            radius: diameter / 2,
+            radius: cameraCornerRadius,
             color: .white
         )
         let clippedCamera = cameraImage.applyingFilter(
@@ -216,7 +217,7 @@ final class FrameCompositor {
         let innerRect = rect.insetBy(dx: borderWidth, dy: borderWidth)
         let inner = Self.roundedRectangle(
             rect: innerRect,
-            radius: innerRect.width / 2,
+            radius: max(0, cameraCornerRadius - borderWidth),
             color: .white
         )
         let border = mask.applyingFilter(
