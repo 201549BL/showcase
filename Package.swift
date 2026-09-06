@@ -3,24 +3,24 @@
 import PackageDescription
 
 let package = Package(
-    name: "SmoothScreen",
+    name: "Showcase",
     platforms: [
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "SmoothScreen", targets: ["SmoothScreen"])
+        .executable(name: "Showcase", targets: ["Showcase"])
     ],
     targets: [
         .executableTarget(
-            name: "SmoothScreen",
-            path: "Sources/SmoothScreen",
+            name: "Showcase",
+            path: "Sources/Showcase",
             linkerSettings: [
                 .linkedFramework("AVKit")
             ]
         ),
         .testTarget(
-            name: "SmoothScreenTests",
-            dependencies: ["SmoothScreen"]
+            name: "ShowcaseTests",
+            dependencies: ["Showcase"]
         )
     ],
     swiftLanguageModes: [.v5]

@@ -4,3 +4,12 @@
 DerivedData/
 *.xcuserstate
 *.screenproject/
+
+# Local distribution artifacts and credentials
+dist/
+.env
+.env.*
+*.p12
+*.p8
+*.mobileprovision
+*.provisionprofile

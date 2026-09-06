@@ -1,0 +1,28 @@
+name: Build and test
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Toolchain
+        run: xcodebuild -version && swift --version
+      - name: Validate release metadata and scripts
+        run: |
+          plutil -lint Resources/Info.plist Resources/Showcase.entitlements
+          bash -n scripts/build-app.sh scripts/package-release.sh
+      - name: Run tests
+        run: swift test
+      - name: Build local app
+        env:
+          SHOWCASE_SIGNING_IDENTITY: '-'
+        run: ./scripts/build-app.sh release
