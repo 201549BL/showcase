@@ -7,7 +7,7 @@ mode="${1:-publish-ready}"
 case "$mode" in --prepare|publish-ready) ;; *) echo "Usage: $0 [--prepare]" >&2; exit 1 ;; esac
 profile="${SHOWCASE_NOTARY_PROFILE:-Showcase}"
 version="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' Resources/Info.plist)"
-release_dir="$repository_dir/.build/release/$version"
+release_dir="$repository_dir/.build/releases/$version"
 app_dir="$repository_dir/.build/distribution/Showcase.app"
 mkdir -p "$release_dir"
 SHOWCASE_DISTRIBUTION=1 ./scripts/build-app.sh release

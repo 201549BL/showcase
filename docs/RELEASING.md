@@ -40,7 +40,7 @@ To prepare the signed universal build before credentials are available:
 
 The prepared app is **not yet ready for distribution**. Run the normal command after setting up notarization.
 
-Final downloads are written to `.build/release/VERSION/`:
+Final downloads are written to `.build/releases/VERSION/`:
 
 - `Showcase-VERSION-universal.zip` — the signed, stapled application.
 - `SHA256SUMS.txt` — SHA-256 checksum of that ZIP.
@@ -58,8 +58,8 @@ Commit the tested source, push it to `main`, and wait for the GitHub build check
 git tag -a v0.1.0 -m 'Showcase 0.1.0'
 git push origin v0.1.0
 gh release create v0.1.0 \
-  .build/release/0.1.0/Showcase-0.1.0-universal.zip \
-  .build/release/0.1.0/SHA256SUMS.txt \
+  .build/releases/0.1.0/Showcase-0.1.0-universal.zip \
+  .build/releases/0.1.0/SHA256SUMS.txt \
   --verify-tag --title 'Showcase 0.1.0' \
   --notes-file docs/releases/0.1.0.md
 ```
