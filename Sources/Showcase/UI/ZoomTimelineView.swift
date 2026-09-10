@@ -85,7 +85,7 @@ struct ZoomTimelineView: View {
                 if model.project.hasCamera { legend("Camera", color: .mint) }
                 if model.showsCameraEmphasisTrack { legend("Camera effects", color: .purple) }
                 Spacer(minLength: 12)
-                Text(model.selectedZoom == nil && model.selectedCamera == nil && model.selectedCameraEmphasis == nil ? "Select a section to edit" : "Drag to move · Drag edges to resize")
+                Text(model.selectedZoom == nil && model.selectedCamera == nil && model.selectedCameraEmphasis == nil ? "Select a section to edit" : "Drag to move · Drag edges to resize · ⌫ to delete")
                     .foregroundStyle(.secondary).lineLimit(1)
             }
             .font(.caption)

@@ -88,8 +88,10 @@ struct ProjectEditorView: View {
                     showingExport = true
                 } label: {
                     if model.isExporting {
-                        ProgressView()
-                            .controlSize(.small)
+                        HStack {
+                            ProgressView().controlSize(.small)
+                            Text(model.exportProgressLabel).font(.caption)
+                        }
                     } else {
                         Label("Export", systemImage: "square.and.arrow.up")
                     }
@@ -182,25 +184,37 @@ struct ProjectEditorView: View {
     private var exportPanel: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Export video").font(.headline)
-            Picker("Format", selection: binding(\.canvas.aspectRatio, actionName: "Change Format")) {
-                ForEach(CanvasSettings.AspectRatio.allCases, id: \.self) { ratio in
-                    Text(ratio.displayName).tag(ratio)
-                }
+            Text("Select one or more sizes")
+                .font(.callout).foregroundStyle(.secondary)
+            ForEach(CanvasSettings.AspectRatio.allCases, id: \.self) { ratio in
+                Toggle(isOn: Binding(
+                    get: { model.selectedExportFormats.contains(ratio) },
+                    set: { selected in
+                        if selected { model.selectedExportFormats.insert(ratio) }
+                        else { model.selectedExportFormats.remove(ratio) }
+                    }
+                )) {
+                    HStack {
+                        Text(ratio.displayName)
+                        Spacer()
+                        Text(model.exportDimensionsLabel(for: ratio))
+                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                }.toggleStyle(.checkbox)
             }
-            Text(model.exportDimensionsLabel)
-                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             Picker("Resolution", selection: Binding(get: { model.quality }, set: model.setQuality)) {
                 ForEach(ExportQuality.allCases) { quality in
                     Text(quality.displayName).tag(quality)
                 }
             }
-            Text("MP4 · \(aspectName(model.project.canvas.aspectRatio)) · \(preciseTimeLabel(model.trimEnd - model.trimStart))")
+            Text("\(model.selectedExportFormats.count) MP4 files · \(preciseTimeLabel(model.trimEnd - model.trimStart)) each")
                 .font(.caption).foregroundStyle(.secondary)
-            Button("Choose location & export…") {
+            Button("Choose folder & export…") {
                 showingExport = false
                 Task { await model.exportVideo() }
             }.appGlassButton(prominent: true)
-        }.padding(22).frame(width: 310)
+                .disabled(model.selectedExportFormats.isEmpty)
+        }.padding(22).frame(width: 370)
     }
 
     private var previewStage: some View {

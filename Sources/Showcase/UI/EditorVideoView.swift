@@ -25,7 +25,7 @@ struct EditorVideoView: NSViewRepresentable {
     }
 }
 
-/// Scope unmodified transport keys to this editor's window. Text editing and
+/// Scope unmodified transport and deletion keys to this editor's window. Text editing and
 /// native controls keep their own keys; sheets and popovers are separate windows.
 struct EditorPlaybackShortcuts: NSViewRepresentable {
     let model: EditorModel
@@ -60,6 +60,9 @@ struct EditorPlaybackShortcuts: NSViewRepresentable {
                 switch event.keyCode {
                 case 49:
                     if !event.isARepeat { model.togglePlayback() }
+                case 51, 117: // Backspace and forward Delete (including Fn-Delete).
+                    guard !event.isARepeat else { return nil }
+                    guard model.deleteSelectedTimelineEffect() else { return event }
                 case 123: model.stepFrame(by: -1)
                 case 124: model.stepFrame(by: 1)
                 default: return event

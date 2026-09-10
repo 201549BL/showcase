@@ -8,6 +8,38 @@ import Testing
 
 @Suite("Editor viewbox interaction")
 struct EditorModelViewboxTests {
+    @Test("Deleting a timeline selection saves the change and supports undo and redo")
+    @MainActor
+    func deleteTimelineSelection() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = try await makeFixture(in: root, withCamera: true)
+        let zoom = try #require(model.selectedZoom)
+        #expect(model.deleteSelectedTimelineEffect())
+        #expect(!model.project.zoomSegments.contains { $0.id == zoom.id })
+        #expect(model.selectedZoomID == nil)
+        #expect(try !ProjectStore().loadProject(at: model.projectURL).zoomSegments.contains { $0.id == zoom.id })
+        #expect(!model.deleteSelectedTimelineEffect())
+        model.undo()
+        #expect(model.project.zoomSegments.contains { $0.id == zoom.id })
+        model.redo()
+        #expect(!model.project.zoomSegments.contains { $0.id == zoom.id })
+
+        model.seek(to: 0)
+        model.addCameraEmphasis()
+        let effect = try #require(model.selectedCameraEmphasis)
+        #expect(model.deleteSelectedTimelineEffect())
+        #expect(!model.project.cameraTimelineEmphases.contains { $0.id == effect.id })
+        model.undo()
+        #expect(model.project.cameraTimelineEmphases.contains { $0.id == effect.id })
+
+        model.selectedCameraID = try #require(model.project.resolvedCameraSegments.first).id
+        #expect(model.deleteSelectedTimelineEffect())
+        #expect(model.project.resolvedCameraSegments.isEmpty)
+        model.undo()
+        #expect(!model.project.resolvedCameraSegments.isEmpty)
+    }
+
     @Test("Image backgrounds save, undo, redo, and switch back to gradients")
     @MainActor
     func backgroundImageHistory() async throws {

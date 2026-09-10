@@ -7,11 +7,9 @@ import Testing
 
 @Suite("Video export")
 struct ExportTests {
-    @Test("Exports a composed MP4 in each output format", arguments: [
-        CanvasSettings.AspectRatio.source, .landscape, .square, .vertical
-    ])
+    @Test("Batch export writes every selected size without changing the project or overwriting files")
     @MainActor
-    func exportsComposedVideo(format: CanvasSettings.AspectRatio) async throws {
+    func exportsComposedVideo() async throws {
         let temporaryRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: temporaryRoot) }
@@ -43,7 +41,7 @@ struct ExportTests {
                 eventsRelativePath: "events/input-events.json"
             )
         )
-        project.canvas.aspectRatio = format
+        project.canvas.aspectRatio = .source
         project.timeline = TimelineSettings(trimStart: 0.2, trimEnd: 0.8)
         project.zoomSegments = [
             ZoomSegment(
@@ -64,47 +62,58 @@ struct ExportTests {
         try store.save(project, to: locations)
         try store.save(events: events, to: locations)
 
-        let outputURL = temporaryRoot.appendingPathComponent("output.mp4")
-        try await VideoExporter(projectStore: store).export(
-            projectURL: locations.projectURL,
-            destinationURL: outputURL,
-            quality: .hd
+        let existingURL = temporaryRoot.appendingPathComponent("Export Fixture-desktop-1080p.mp4")
+        let existingData = Data("Existing export".utf8)
+        try existingData.write(to: existingURL)
+        let formats: [CanvasSettings.AspectRatio] = [.source, .landscape, .square, .vertical]
+        var completed: [URL] = []
+        let outputs = try await VideoExporter(projectStore: store).exportBatch(
+            projectURL: locations.projectURL, directoryURL: temporaryRoot,
+            formats: formats + [.landscape], quality: .hd,
+            didExport: { completed.append($0) }
         )
+        #expect(outputs.count == 4)
+        #expect(completed == outputs)
+        #expect(try store.loadProject(at: locations.projectURL) == project)
+        #expect(try Data(contentsOf: existingURL) == existingData)
+        #expect(outputs[1].lastPathComponent == "Export Fixture-desktop-1080p-2.mp4")
 
-        #expect(FileManager.default.fileExists(atPath: outputURL.path))
-        let attributes = try FileManager.default.attributesOfItem(atPath: outputURL.path)
-        #expect((attributes[.size] as? NSNumber)?.intValue ?? 0 > 1_000)
+        for (format, outputURL) in zip(formats, outputs) {
+            #expect(FileManager.default.fileExists(atPath: outputURL.path))
+            let attributes = try FileManager.default.attributesOfItem(atPath: outputURL.path)
+            #expect((attributes[.size] as? NSNumber)?.intValue ?? 0 > 1_000)
 
-        let outputAsset = AVURLAsset(url: outputURL)
-        let tracks = try await outputAsset.loadTracks(withMediaType: .video)
-        let naturalSize = try await tracks[0].load(.naturalSize)
-        let outputDuration = CMTimeGetSeconds(try await outputAsset.load(.duration))
-        let expectedSize: CGSize
-        switch format {
-        case .source: expectedSize = CGSize(width: 320, height: 180)
-        case .landscape: expectedSize = CGSize(width: 1920, height: 1080)
-        case .square: expectedSize = CGSize(width: 1080, height: 1080)
-        case .vertical: expectedSize = CGSize(width: 1080, height: 1920)
-        }
-        #expect(naturalSize == expectedSize)
-        #expect(outputDuration > 0.55 && outputDuration < 0.7)
+            let outputAsset = AVURLAsset(url: outputURL)
+            let tracks = try await outputAsset.loadTracks(withMediaType: .video)
+            let naturalSize = try await tracks[0].load(.naturalSize)
+            let outputDuration = CMTimeGetSeconds(try await outputAsset.load(.duration))
+            let expectedSize: CGSize
+            switch format {
+            case .source: expectedSize = CGSize(width: 320, height: 180)
+            case .landscape: expectedSize = CGSize(width: 1920, height: 1080)
+            case .square: expectedSize = CGSize(width: 1080, height: 1080)
+            case .vertical: expectedSize = CGSize(width: 1080, height: 1920)
+            }
+            #expect(naturalSize == expectedSize)
+            #expect(outputDuration > 0.55 && outputDuration < 0.7)
 
-        let frameTimes = try framePresentationTimes(asset: outputAsset, track: tracks[0])
-            .sorted()
-        #expect(frameTimes.count >= 32)
-        let largestFrameGap = zip(frameTimes, frameTimes.dropFirst())
-            .map { CMTimeGetSeconds($1 - $0) }
-            .max() ?? 0
-        #expect(largestFrameGap < 0.025)
+            let frameTimes = try framePresentationTimes(asset: outputAsset, track: tracks[0])
+                .sorted()
+            #expect(frameTimes.count >= 32)
+            let largestFrameGap = zip(frameTimes, frameTimes.dropFirst())
+                .map { CMTimeGetSeconds($1 - $0) }
+                .max() ?? 0
+            #expect(largestFrameGap < 0.025)
 
-        if format == .source && ProcessInfo.processInfo.environment["SHOWCASE_KEEP_FIXTURE"] == "1" {
-            let retained = URL(fileURLWithPath: ".build/export-fixture.mp4")
-            try? FileManager.default.removeItem(at: retained)
-            try FileManager.default.copyItem(at: outputURL, to: retained)
+            if format == .source && ProcessInfo.processInfo.environment["SHOWCASE_KEEP_FIXTURE"] == "1" {
+                let retained = URL(fileURLWithPath: ".build/export-fixture.mp4")
+                try? FileManager.default.removeItem(at: retained)
+                try FileManager.default.copyItem(at: outputURL, to: retained)
 
-            let retainedProject = URL(fileURLWithPath: ".build/ExportFixture.screenproject")
-            try? FileManager.default.removeItem(at: retainedProject)
-            try FileManager.default.copyItem(at: locations.projectURL, to: retainedProject)
+                let retainedProject = URL(fileURLWithPath: ".build/ExportFixture.screenproject")
+                try? FileManager.default.removeItem(at: retainedProject)
+                try FileManager.default.copyItem(at: locations.projectURL, to: retainedProject)
+            }
         }
     }
 

@@ -30,11 +30,50 @@ final class VideoExporter {
         destinationURL: URL,
         quality: ExportQuality
     ) async throws {
+        let project = try projectStore.loadProject(at: projectURL)
+        try await export(project: project, projectURL: projectURL, destinationURL: destinationURL, quality: quality)
+    }
+
+    /// Export a snapshot of the project sequentially, keeping rendering memory bounded.
+    func exportBatch(
+        projectURL: URL,
+        directoryURL: URL,
+        formats: [CanvasSettings.AspectRatio],
+        quality: ExportQuality,
+        didExport: (URL) -> Void = { _ in }
+    ) async throws -> [URL] {
+        let snapshot = try projectStore.loadProject(at: projectURL)
+        var outputs: [URL] = []
+        var seen = Set<CanvasSettings.AspectRatio>()
+        for format in formats where seen.insert(format).inserted {
+            var project = snapshot
+            project.canvas.aspectRatio = format
+            let name = projectURL.deletingPathExtension().lastPathComponent
+                + "-" + format.filenameSuffix + "-" + quality.displayName
+            var destination = directoryURL.appendingPathComponent(name + ".mp4")
+            var suffix = 2
+            while FileManager.default.fileExists(atPath: destination.path) {
+                destination = directoryURL.appendingPathComponent("\(name)-\(suffix).mp4")
+                suffix += 1
+            }
+            try await export(project: project, projectURL: projectURL,
+                             destinationURL: destination, quality: quality)
+            outputs.append(destination)
+            didExport(destination)
+        }
+        return outputs
+    }
+
+    private func export(
+        project: RecordingProject,
+        projectURL: URL,
+        destinationURL: URL,
+        quality: ExportQuality
+    ) async throws {
         guard !FileManager.default.fileExists(atPath: destinationURL.path) else {
             throw ExportError.destinationExists
         }
 
-        let project = try projectStore.loadProject(at: projectURL)
         let events = try projectStore.loadEvents(at: projectURL)
         let locations = projectStore.locations(for: projectURL)
         let asset = AVURLAsset(url: locations.videoURL)

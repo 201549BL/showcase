@@ -30,7 +30,7 @@ While recording, the floating bar shows elapsed time and a red **Stop recording*
 - During screen zooms, generated camera effects make the face camera smaller. Their size, timing, and transition remain editable.
 - Undo with **⌘Z** and redo with **⇧⌘Z**.
 - Toggle recorded audio in its timeline band; the setting applies to preview and export.
-- Choose Desktop (16:9), Square (1:1), Shorts (9:16), or original size in Export, in 1080p or 4K. Format-specific filenames keep multiple versions separate.
+- Select any combination of Desktop (16:9), Square (1:1), Shorts (9:16), and original size in Export, in 1080p or 4K. One export creates separate MP4 files in your chosen folder without changing the project’s canvas. Existing filenames receive a numbered suffix.
 
 New recordings are saved in `~/Movies/Showcase` as recoverable `.screenproject` folders. Keep the entire folder together: it contains screen/camera media, input-event metadata, and edits. Use **Open recording…** in the source popover to reopen a project. Recordings previously saved in `~/Movies/SmoothScreen` continue to work.
 

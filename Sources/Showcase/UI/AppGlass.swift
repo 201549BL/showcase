@@ -41,3 +41,17 @@ private struct AppGlassButton: ViewModifier {
         }
     }
 }
+
+/// Floating controls need an edge against both bright windows and dark desktops.
+struct RecorderGlassSurface: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+
+    func body(content: Content) -> some View {
+        content
+            .appGlassSurface(in: Capsule(), tint: colorScheme == .dark
+                ? .white.opacity(0.06) : .black.opacity(0.06))
+            .overlay(Capsule().strokeBorder(.black.opacity(0.22), lineWidth: 1))
+            .overlay(Capsule().inset(by: 1).strokeBorder(.white.opacity(0.45), lineWidth: 1))
+            .shadow(color: .black.opacity(0.25), radius: 8, x: 0, y: 3)
+    }
+}

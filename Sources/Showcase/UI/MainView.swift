@@ -10,11 +10,11 @@ struct MainView: View {
                     .frame(minWidth: 940, minHeight: 660)
             } else if model.isRecording {
                 RecordingStrip(model: model)
-                    .frame(width: 360, height: 96)
+                    .frame(width: RecordingWindowLayout.recordingSize.width, height: RecordingWindowLayout.recordingSize.height)
                     .ignoresSafeArea(.container, edges: .top)
             } else {
                 RecordingSetupView(model: model, devices: model.devicePreview)
-                    .frame(width: 520, height: 88)
+                    .frame(width: RecordingWindowLayout.setupSize.width, height: RecordingWindowLayout.setupSize.height)
                     .ignoresSafeArea(.container, edges: .top)
             }
         }
@@ -60,6 +60,7 @@ private struct RecordingSetupView: View {
         Group {
             if let remaining = model.countdownRemaining {
                 HStack(spacing: 22) {
+                    RecordingDragHandle().frame(width: 28, height: 44)
                     Text("Get ready").foregroundStyle(.secondary)
                     Text("\(remaining)").font(.system(size: 24, weight: .medium, design: .rounded))
                         .monospacedDigit().frame(width: 24)
@@ -67,7 +68,7 @@ private struct RecordingSetupView: View {
                         .appGlassButton().keyboardShortcut(.cancelAction)
                 }
                 .padding(.horizontal, 18).frame(height: 64)
-                .appGlassSurface(in: Capsule())
+                .modifier(RecorderGlassSurface())
             } else {
                 bar
             }
@@ -109,6 +110,7 @@ private struct RecordingSetupView: View {
 
     private var bar: some View {
         HStack(spacing: 4) {
+            RecordingDragHandle().frame(width: 28, height: 44)
             Button { popover = .source } label: {
                 HStack(spacing: 9) {
                     Image(systemName: needsPermission ? "lock.shield" : model.selectedSource?.descriptor.kind == .window ? "macwindow" : "display")
@@ -150,7 +152,7 @@ private struct RecordingSetupView: View {
         }
         .disabled(isBusy)
         .padding(.horizontal, 12).frame(height: 64)
-        .appGlassSurface(in: Capsule())
+        .modifier(RecorderGlassSurface())
     }
 
     private var separator: some View {
@@ -289,6 +291,7 @@ private struct RecordingStrip: View {
 
     var body: some View {
         HStack(spacing: 18) {
+            RecordingDragHandle().frame(width: 28, height: 44)
             HStack(spacing: 9) {
                 Circle().fill(.red).frame(width: 9, height: 9)
                 VStack(alignment: .leading, spacing: 3) {
@@ -317,8 +320,7 @@ private struct RecordingStrip: View {
             .help("Stop recording and open the editor (⌘.)")
         }
         .padding(.horizontal, 16).frame(height: 72)
-        .appGlassSurface(in: Capsule())
-        .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
+        .modifier(RecorderGlassSurface())
         .padding(12)
     }
 

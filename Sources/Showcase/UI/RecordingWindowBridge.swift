@@ -47,7 +47,7 @@ struct RecordingWindowBridge: NSViewRepresentable {
                 window.titlebarAppearsTransparent = next != .editor
                 window.isOpaque = next == .editor
                 window.backgroundColor = next == .editor ? .windowBackgroundColor : .clear
-                window.hasShadow = next == .editor
+                window.hasShadow = true
                 window.isMovableByWindowBackground = next != .editor
                 window.level = next == .editor ? .normal : .floating
                 window.collectionBehavior = next == .recording ? [.canJoinAllSpaces, .fullScreenAuxiliary] : [.fullScreenAuxiliary]
@@ -68,7 +68,7 @@ struct RecordingWindowBridge: NSViewRepresentable {
                     // the resizable capability lets AppKit make it key; matching
                     // content limits below keep the recorder at its fixed size.
                     window.styleMask = [.borderless, .resizable]
-                    let size = next == .recording ? NSSize(width: 360, height: 96) : NSSize(width: 520, height: 88)
+                    let size = next == .recording ? RecordingWindowLayout.recordingSize : RecordingWindowLayout.setupSize
                     window.contentMinSize = size
                     window.contentMaxSize = size
                     window.setContentSize(size)
@@ -128,6 +128,9 @@ struct RecordingWindowBridge: NSViewRepresentable {
 }
 
 enum RecordingWindowLayout {
+    static let setupSize = NSSize(width: 556, height: 88)
+    static let recordingSize = NSSize(width: 400, height: 96)
+
     static func appKitRect(_ source: CGRect, desktopTop: CGFloat) -> CGRect {
         CGRect(x: source.minX, y: desktopTop - source.maxY, width: source.width, height: source.height)
     }
@@ -146,6 +149,51 @@ struct RecordingPopoverFocusBridge: NSViewRepresentable {
             DispatchQueue.main.async { [weak self, weak window] in
                 guard let self, let window, self.window === window else { return }
                 window.makeKey()
+            }
+        }
+    }
+}
+
+/// A dedicated native drag target avoids competing with SwiftUI control gestures.
+struct RecordingDragHandle: NSViewRepresentable {
+    func makeNSView(context: Context) -> HandleView { HandleView() }
+    func updateNSView(_ view: HandleView, context: Context) {}
+
+    final class HandleView: NSView {
+        override init(frame frameRect: NSRect) {
+            super.init(frame: frameRect)
+            toolTip = "Drag to move recording controls"
+            setAccessibilityElement(true)
+            setAccessibilityRole(.group)
+            setAccessibilityLabel("Move recording controls")
+            setAccessibilityHelp("Drag this handle to reposition the recording controls.")
+        }
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+        override var mouseDownCanMoveWindow: Bool { false }
+
+        override func resetCursorRects() {
+            addCursorRect(bounds, cursor: .openHand)
+        }
+
+        override func mouseDown(with event: NSEvent) {
+            NSCursor.closedHand.push()
+            defer { NSCursor.pop() }
+            window?.performDrag(with: event)
+        }
+
+        override func draw(_ dirtyRect: NSRect) {
+            NSColor.labelColor.withAlphaComponent(0.08).setFill()
+            NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 4), xRadius: 9, yRadius: 9).fill()
+            NSColor.secondaryLabelColor.setFill()
+            for row in 0..<3 {
+                for column in 0..<2 {
+                    let dot = NSRect(x: bounds.midX - 5 + CGFloat(column) * 7,
+                                     y: bounds.midY - 9 + CGFloat(row) * 7,
+                                     width: 3, height: 3)
+                    NSBezierPath(ovalIn: dot).fill()
+                }
             }
         }
     }

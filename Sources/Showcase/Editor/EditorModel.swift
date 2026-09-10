@@ -7,6 +7,9 @@ import UniformTypeIdentifiers
 final class EditorModel: ObservableObject {
     @Published var project: RecordingProject
     @Published private(set) var hasAudio = false
+    @Published var selectedExportFormats: Set<CanvasSettings.AspectRatio> = [.landscape]
+    @Published private(set) var exportProgressLabel = ""
+    @Published private(set) var lastExportURLs: [URL] = []
     @Published var quality: ExportQuality = .hd
     @Published private(set) var isExporting = false
     @Published private(set) var lastExportURL: URL?
@@ -61,6 +64,7 @@ final class EditorModel: ObservableObject {
         loadedProject.synchronizeCameraEffects()
         let loadedEvents = try projectStore.loadEvents(at: projectURL)
         project = loadedProject
+        selectedExportFormats = [loadedProject.canvas.aspectRatio]
         events = loadedEvents
         localizedEvents = InputEventLocalizer().localize(
             loadedEvents,
@@ -304,6 +308,20 @@ final class EditorModel: ObservableObject {
         }
         selectedZoomID = segment.id
         seek(to: segment.focusTime)
+    }
+
+    @discardableResult
+    func deleteSelectedTimelineEffect() -> Bool {
+        if let zoom = selectedZoom {
+            deleteZoom(id: zoom.id)
+        } else if let camera = selectedCamera {
+            deleteCameraSection(id: camera.id)
+        } else if let effect = selectedCameraEmphasis {
+            deleteCameraEmphasis(id: effect.id)
+        } else {
+            return false
+        }
+        return true
     }
 
     func deleteZoom(id: UUID) {
@@ -643,38 +661,48 @@ final class EditorModel: ObservableObject {
         restore(snapshot)
     }
 
-    var exportDimensionsLabel: String {
-        let size = CanvasGeometry(project: project, quality: quality).canvasSize
+    func exportDimensionsLabel(for format: CanvasSettings.AspectRatio) -> String {
+        let size = quality.canvasSize(aspectRatio: format,
+            sourceSize: CGSize(width: project.recording.width, height: project.recording.height))
         return "\(Int(size.width)) × \(Int(size.height))"
     }
 
     func exportVideo() async {
-        let panel = NSSavePanel()
-        panel.title = "Export Showcase Video"
-        panel.allowedContentTypes = [.mpeg4Movie]
+        guard !isExporting, !selectedExportFormats.isEmpty else { return }
+        let formats = CanvasSettings.AspectRatio.allCases.filter { selectedExportFormats.contains($0) }
+        let exportQuality = quality
+        let panel = NSOpenPanel()
+        panel.title = "Choose Export Folder"
+        panel.prompt = "Export \(formats.count) \(formats.count == 1 ? "Video" : "Videos")"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
         panel.canCreateDirectories = true
-        panel.nameFieldStringValue = projectURL.deletingPathExtension().lastPathComponent
-            + "-" + project.canvas.aspectRatio.filenameSuffix + "-" + quality.displayName + ".mp4"
-
-        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        guard panel.runModal() == .OK, let directory = panel.url else { return }
 
         isExporting = true
         player.pause()
-        defer { isExporting = false }
+        lastExportURLs = []
+        exportProgressLabel = "Exporting 1 of \(formats.count)…"
+        defer { isExporting = false; exportProgressLabel = "" }
 
         do {
-            if FileManager.default.fileExists(atPath: destination.path) {
-                try FileManager.default.removeItem(at: destination)
+            try projectStore.save(project, to: projectStore.locations(for: projectURL))
+            let outputs = try await exporter.exportBatch(
+                projectURL: projectURL, directoryURL: directory, formats: formats, quality: exportQuality
+            ) { [self] url in
+                lastExportURLs.append(url)
+                lastExportURL = url
+                if lastExportURLs.count < formats.count {
+                    exportProgressLabel = "Exporting \(lastExportURLs.count + 1) of \(formats.count)…"
+                }
             }
-            try await exporter.export(
-                projectURL: projectURL,
-                destinationURL: destination,
-                quality: quality
-            )
-            lastExportURL = destination
-            NSWorkspace.shared.activateFileViewerSelecting([destination])
+            NSWorkspace.shared.activateFileViewerSelecting(outputs)
         } catch {
-            present(error)
+            let completed = lastExportURLs.count
+            presentedError = PresentedError(message: "Export stopped after \(completed) of \(formats.count) videos. "
+                + (completed > 0 ? "Completed videos are saved in the chosen folder. " : "")
+                + error.localizedDescription)
         }
     }
 
@@ -684,7 +712,7 @@ final class EditorModel: ObservableObject {
 
     func revealLastExport() {
         guard let lastExportURL else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([lastExportURL])
+        NSWorkspace.shared.activateFileViewerSelecting(lastExportURLs.isEmpty ? [lastExportURL] : lastExportURLs)
     }
 
     private func rebuildPreview(preservingTime: Bool) {
