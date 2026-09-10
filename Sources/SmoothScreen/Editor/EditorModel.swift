@@ -6,11 +6,13 @@ import UniformTypeIdentifiers
 @MainActor
 final class EditorModel: ObservableObject {
     @Published var project: RecordingProject
+    @Published private(set) var hasAudio = false
     @Published var quality: ExportQuality = .hd
     @Published private(set) var isExporting = false
     @Published private(set) var lastExportURL: URL?
     @Published var presentedError: PresentedError?
     @Published var selectedZoomID: UUID?
+    @Published var selectedReframeID: UUID?
     @Published private(set) var playheadTime = 0.0
     @Published private(set) var undoActionName: String?
     @Published private(set) var redoActionName: String?
@@ -25,6 +27,7 @@ final class EditorModel: ObservableObject {
     private var previewRefreshTask: Task<Void, Never>?
     private var timeObserver: Any?
     private var history = EditorHistory<EditorSnapshot>()
+    private var isEditingViewbox = false
 
     init(
         projectURL: URL,
@@ -46,6 +49,15 @@ final class EditorModel: ObservableObject {
         )
         selectedZoomID = loadedProject.zoomSegments.first?.id
         rebuildPreview(preservingTime: false)
+        let asset = AVURLAsset(url: projectStore.locations(for: projectURL).videoURL)
+        Task { [weak self] in
+            do {
+                let tracks = try await asset.loadTracks(withMediaType: .audio)
+                self?.hasAudio = !tracks.isEmpty
+            } catch {
+                self?.present(error)
+            }
+        }
         timeObserver = player.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 1.0 / 30.0, preferredTimescale: 600),
             queue: .main
@@ -88,6 +100,51 @@ final class EditorModel: ObservableObject {
         return project.zoomSegments.first { $0.id == selectedZoomID }
     }
 
+    var selectedReframe: ZoomReframe? {
+        guard let selectedReframeID else { return nil }
+        return selectedZoom?.reframes.first { $0.id == selectedReframeID }
+    }
+
+    var selectedViewboxTarget: ZoomViewboxEditTarget? {
+        guard let selectedZoom else { return nil }
+        if let selectedReframe {
+            return ZoomViewboxEditTarget(
+                id: selectedReframe.id,
+                focusPoint: selectedReframe.focusPoint.cgPoint,
+                scale: selectedReframe.scale,
+                time: selectedReframe.time,
+                cursorBoundaryFraction: selectedZoom.resolvedCursorBoundaryFraction
+            )
+        }
+        return ZoomViewboxEditTarget(
+            id: selectedZoom.id,
+            focusPoint: selectedZoom.focusPoint.cgPoint,
+            scale: selectedZoom.scale,
+            time: selectedZoom.focusTime,
+            cursorBoundaryFraction: selectedZoom.resolvedCursorBoundaryFraction
+        )
+    }
+
+    func cameraPositions(for zoom: ZoomSegment) -> [ZoomCameraPosition] {
+        let initial = ZoomCameraPosition(
+            id: zoom.id,
+            time: zoom.focusTime,
+            focusPoint: zoom.focusPoint.cgPoint,
+            scale: zoom.scale,
+            isInitial: true
+        )
+        let later = zoom.reframes.map {
+            ZoomCameraPosition(
+                id: $0.id,
+                time: $0.time,
+                focusPoint: $0.focusPoint.cgPoint,
+                scale: $0.scale,
+                isInitial: false
+            )
+        }
+        return ([initial] + later).sorted { $0.time < $1.time }
+    }
+
     var zoomBehavior: ZoomBehaviorSettings {
         project.resolvedZoomBehavior
     }
@@ -120,6 +177,7 @@ final class EditorModel: ObservableObject {
     }
 
     func projectDidChange(rebuildPreview: Bool = true) {
+        player.isMuted = project.resolvedIsAudioMuted
         do {
             try projectStore.save(project, to: projectStore.locations(for: projectURL))
         } catch {
@@ -173,6 +231,14 @@ final class EditorModel: ObservableObject {
         }
     }
 
+    func setZoomMotionStyle(_ style: ZoomBehaviorSettings.MotionStyle) {
+        editProject(actionName: "Change Camera Motion") { project in
+            var settings = project.resolvedZoomBehavior
+            settings.motionStyle = style
+            project.zoomBehavior = settings
+        }
+    }
+
     func addManualZoom() {
         let time = max(0, CMTimeGetSeconds(player.currentTime()))
         let duration = project.recording.duration ?? time + 2
@@ -204,16 +270,126 @@ final class EditorModel: ObservableObject {
         editProject(actionName: "Delete Zoom") { project in
             project.zoomSegments.removeAll { $0.id == id }
         }
-        if selectedZoomID == id { selectedZoomID = nil }
+        if selectedZoomID == id {
+            selectedZoomID = nil
+            selectedReframeID = nil
+        }
     }
 
     func selectZoom(id: UUID, seekToFocus: Bool = true) {
+        if selectedZoomID != id {
+            selectedReframeID = nil
+        }
         selectedZoomID = id
         guard
             seekToFocus,
             let zoom = project.zoomSegments.first(where: { $0.id == id })
         else { return }
         seek(to: zoom.focusTime)
+    }
+
+    func selectBaseViewbox(for zoomID: UUID, seek: Bool = true) {
+        selectZoom(id: zoomID, seekToFocus: false)
+        selectedReframeID = nil
+        if seek, let zoom = selectedZoom {
+            self.seek(to: zoom.focusTime)
+        }
+    }
+
+    func selectReframe(id: UUID, in zoomID: UUID, seek: Bool = true) {
+        selectZoom(id: zoomID, seekToFocus: false)
+        guard let reframe = selectedZoom?.reframes.first(where: { $0.id == id }) else {
+            selectedReframeID = nil
+            return
+        }
+        selectedReframeID = id
+        if seek {
+            self.seek(to: reframe.time)
+        }
+    }
+
+    func selectCameraPosition(_ position: ZoomCameraPosition, in zoomID: UUID, seek: Bool = true) {
+        if position.isInitial {
+            selectBaseViewbox(for: zoomID, seek: seek)
+        } else {
+            selectReframe(id: position.id, in: zoomID, seek: seek)
+        }
+    }
+
+    func canAddReframe(to zoomID: UUID) -> Bool {
+        guard let zoom = project.zoomSegments.first(where: { $0.id == zoomID }) else {
+            return false
+        }
+        return playheadTime > zoom.focusTime + 1.0 / 30.0
+            && playheadTime <= zoom.endTime - 0.1
+    }
+
+    func canAddCameraPosition(to zoomID: UUID) -> Bool {
+        canAddReframe(to: zoomID)
+    }
+
+    @discardableResult
+    func addReframeAtPlayhead(to zoomID: UUID) -> UUID? {
+        guard
+            let index = project.zoomSegments.firstIndex(where: { $0.id == zoomID }),
+            canAddReframe(to: zoomID)
+        else { return nil }
+
+        let zoom = project.zoomSegments[index]
+        let time = min(zoom.endTime - 0.1, max(zoom.focusTime, playheadTime))
+        if let existing = zoom.reframes.first(where: { abs($0.time - time) < 1.0 / 30.0 }) {
+            selectReframe(id: existing.id, in: zoomID)
+            return existing.id
+        }
+
+        let preceding = zoom.reframes
+            .filter { $0.time <= time }
+            .max { $0.time < $1.time }
+        let reframe = ZoomReframe(
+            time: time,
+            focusPoint: preceding?.focusPoint ?? zoom.focusPoint,
+            scale: preceding?.scale ?? zoom.scale
+        )
+        editProject(actionName: "Add Camera Position") { project in
+            project.zoomSegments[index].reframes.append(reframe)
+            project.zoomSegments[index].reframes.sort { $0.time < $1.time }
+            project.zoomSegments[index].source = .manual
+        }
+        selectedZoomID = zoomID
+        selectedReframeID = reframe.id
+        seek(to: reframe.time)
+        return reframe.id
+    }
+
+    @discardableResult
+    func addCameraPositionAtPlayhead(to zoomID: UUID) -> UUID? {
+        addReframeAtPlayhead(to: zoomID)
+    }
+
+    func deleteReframe(id: UUID, from zoomID: UUID) {
+        guard let index = project.zoomSegments.firstIndex(where: { $0.id == zoomID }) else {
+            return
+        }
+        editProject(actionName: "Delete Camera Position") { project in
+            project.zoomSegments[index].reframes.removeAll { $0.id == id }
+        }
+        if selectedReframeID == id {
+            selectedReframeID = nil
+        }
+    }
+
+
+    func deleteCameraPosition(id: UUID, from zoomID: UUID) {
+        guard let zoom = project.zoomSegments.first(where: { $0.id == zoomID }) else {
+            return
+        }
+        let positions = cameraPositions(for: zoom)
+        guard let deletedIndex = positions.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        let fallback = positions[max(0, deletedIndex - 1)]
+        deleteReframe(id: id, from: zoomID)
+        selectCameraPosition(fallback, in: zoomID)
     }
 
     func seek(to time: Double) {
@@ -233,9 +409,13 @@ final class EditorModel: ObservableObject {
         let focusOffset = project.zoomSegments[index].focusTime
             - project.zoomSegments[index].startTime
         let start = min(max(0, proposedStart), max(0, recordingDuration - duration))
+        let timeDelta = start - project.zoomSegments[index].startTime
         project.zoomSegments[index].startTime = start
         project.zoomSegments[index].focusTime = min(start + duration, start + focusOffset)
         project.zoomSegments[index].endTime = start + duration
+        for reframeIndex in project.zoomSegments[index].reframes.indices {
+            project.zoomSegments[index].reframes[reframeIndex].time += timeDelta
+        }
     }
 
     func resizeZoomStart(id: UUID, to proposedStart: Double) {
@@ -247,6 +427,13 @@ final class EditorModel: ObservableObject {
             start,
             project.zoomSegments[index].focusTime
         )
+        let earliestReframe = project.zoomSegments[index].focusTime
+        for reframeIndex in project.zoomSegments[index].reframes.indices {
+            project.zoomSegments[index].reframes[reframeIndex].time = max(
+                earliestReframe,
+                project.zoomSegments[index].reframes[reframeIndex].time
+            )
+        }
     }
 
     func resizeZoomEnd(id: UUID, to proposedEnd: Double) {
@@ -258,6 +445,14 @@ final class EditorModel: ObservableObject {
             end,
             project.zoomSegments[index].focusTime
         )
+        let latestReframe = max(project.zoomSegments[index].focusTime, end - 0.1)
+        for reframeIndex in project.zoomSegments[index].reframes.indices {
+            project.zoomSegments[index].reframes[reframeIndex].time = min(
+                latestReframe,
+                project.zoomSegments[index].reframes[reframeIndex].time
+            )
+        }
+        project.zoomSegments[index].reframes.sort { $0.time < $1.time }
     }
 
     func commitTimelineEdit() {
@@ -267,23 +462,58 @@ final class EditorModel: ObservableObject {
     }
 
     func setSelectedZoomFocus(_ point: CGPoint) {
+        guard let selectedZoom else { return }
+        setSelectedZoomViewbox(focusPoint: point, scale: selectedZoom.scale)
+    }
+
+    func setSelectedZoomViewbox(focusPoint: CGPoint, scale: Double) {
         guard
             let selectedZoomID,
             let index = project.zoomSegments.firstIndex(where: { $0.id == selectedZoomID })
         else { return }
 
-        let scale = max(1, project.zoomSegments[index].scale)
-        let halfWidth = Double(project.recording.width) / (2 * scale)
-        let halfHeight = Double(project.recording.height) / (2 * scale)
-        editProject(actionName: "Set Zoom Focus") { project in
-            project.zoomSegments[index].focusPoint = CodablePoint(CGPoint(
-                x: min(Double(project.recording.width) - halfWidth, max(halfWidth, point.x)),
-                y: min(Double(project.recording.height) - halfHeight, max(halfHeight, point.y))
+        let clampedScale = min(3.5, max(1.1, scale))
+        let halfWidth = Double(project.recording.width) / (2 * clampedScale)
+        let halfHeight = Double(project.recording.height) / (2 * clampedScale)
+        editProject(
+            actionName: "Change Zoom Viewbox",
+            rebuildPreview: !isEditingViewbox
+        ) { project in
+            let clampedFocus = CodablePoint(CGPoint(
+                x: min(Double(project.recording.width) - halfWidth, max(halfWidth, focusPoint.x)),
+                y: min(Double(project.recording.height) - halfHeight, max(halfHeight, focusPoint.y))
             ))
+            if
+                let selectedReframeID,
+                let reframeIndex = project.zoomSegments[index].reframes.firstIndex(
+                    where: { $0.id == selectedReframeID }
+                )
+            {
+                project.zoomSegments[index].reframes[reframeIndex].focusPoint = clampedFocus
+                project.zoomSegments[index].reframes[reframeIndex].scale = clampedScale
+            } else {
+                project.zoomSegments[index].focusPoint = clampedFocus
+                project.zoomSegments[index].scale = clampedScale
+            }
+            project.zoomSegments[index].source = .manual
+        }
+    }
+
+    func setViewboxEditing(_ isEditing: Bool) {
+        guard isEditingViewbox != isEditing else { return }
+        isEditingViewbox = isEditing
+        player.pause()
+        rebuildPreview(preservingTime: true)
+    }
+
+    func setAudioMuted(_ muted: Bool) {
+        editProject(actionName: muted ? "Mute Audio" : "Unmute Audio", rebuildPreview: false) {
+            $0.isAudioMuted = muted
         }
     }
 
     func applyBackground(_ preset: BackgroundPreset) {
+        BackgroundPreferences().remember(preset)
         editProject(actionName: "Change Background") { project in
             project.canvas.backgroundStartHex = preset.startHex
             project.canvas.backgroundEndHex = preset.endHex
@@ -326,12 +556,18 @@ final class EditorModel: ObservableObject {
         restore(snapshot)
     }
 
+    var exportDimensionsLabel: String {
+        let size = CanvasGeometry(project: project, quality: quality).canvasSize
+        return "\(Int(size.width)) × \(Int(size.height))"
+    }
+
     func exportVideo() async {
         let panel = NSSavePanel()
         panel.title = "Export SmoothScreen Video"
         panel.allowedContentTypes = [.mpeg4Movie]
         panel.canCreateDirectories = true
-        panel.nameFieldStringValue = projectURL.deletingPathExtension().lastPathComponent + ".mp4"
+        panel.nameFieldStringValue = projectURL.deletingPathExtension().lastPathComponent
+            + "-" + project.canvas.aspectRatio.filenameSuffix + "-" + quality.displayName + ".mp4"
 
         guard panel.runModal() == .OK, let destination = panel.url else { return }
 
@@ -365,20 +601,34 @@ final class EditorModel: ObservableObject {
     }
 
     private func rebuildPreview(preservingTime: Bool) {
+        previewRefreshTask?.cancel()
+        previewRefreshTask = nil
         let currentTime = preservingTime ? player.currentTime() : .zero
         let wasPlaying = player.rate != 0
         let locations = projectStore.locations(for: projectURL)
         let asset = AVURLAsset(url: locations.videoURL)
+        var previewProject = project
+        if isEditingViewbox {
+            previewProject.zoomSegments = []
+            if previewProject.cameraOverlay != nil {
+                previewProject.cameraOverlay?.isVisible = false
+            }
+            previewProject.motionBlur = .disabled
+        }
         let built = VideoCompositionBuilder().build(
             asset: asset,
-            project: project,
+            project: previewProject,
             events: events,
             quality: quality,
-            purpose: .preview
+            purpose: .preview,
+            cameraVideoURL: !isEditingViewbox && project.recording.cameraVideoRelativePath != nil
+                ? locations.cameraVideoURL
+                : nil
         )
         let item = AVPlayerItem(asset: asset)
         item.videoComposition = built.composition
         item.forwardPlaybackEndTime = CMTime(seconds: trimEnd, preferredTimescale: 600)
+        player.isMuted = project.resolvedIsAudioMuted
         player.replaceCurrentItem(with: item)
         let requestedSeconds = CMTimeGetSeconds(currentTime)
         let seekSeconds = min(trimEnd, max(trimStart, requestedSeconds.isFinite ? requestedSeconds : trimStart))
@@ -425,8 +675,12 @@ final class EditorModel: ObservableObject {
         quality = snapshot.quality
         if let selectedZoomID, !project.zoomSegments.contains(where: { $0.id == selectedZoomID }) {
             self.selectedZoomID = project.zoomSegments.first?.id
+            selectedReframeID = nil
         } else if selectedZoomID == nil {
             selectedZoomID = project.zoomSegments.first?.id
+        }
+        if let selectedReframeID, selectedReframe?.id != selectedReframeID {
+            self.selectedReframeID = nil
         }
         syncHistoryState()
         projectDidChange()
@@ -441,6 +695,22 @@ final class EditorModel: ObservableObject {
 private struct EditorSnapshot: Equatable {
     let project: RecordingProject
     let quality: ExportQuality
+}
+
+struct ZoomViewboxEditTarget: Equatable, Identifiable {
+    let id: UUID
+    let focusPoint: CGPoint
+    let scale: Double
+    let time: Double
+    let cursorBoundaryFraction: Double
+}
+
+struct ZoomCameraPosition: Equatable, Identifiable {
+    let id: UUID
+    let time: Double
+    let focusPoint: CGPoint
+    let scale: Double
+    let isInitial: Bool
 }
 
 enum BackgroundPreset: String, CaseIterable, Identifiable {

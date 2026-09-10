@@ -59,6 +59,7 @@ struct ProjectStore {
             projectURL: projectURL,
             projectJSONURL: projectURL.appendingPathComponent("project.json"),
             videoURL: mediaURL.appendingPathComponent("screen.mov"),
+            cameraVideoURL: mediaURL.appendingPathComponent("camera.mov"),
             eventsURL: eventsURL.appendingPathComponent("input-events.json")
         )
     }
@@ -94,6 +95,7 @@ struct ProjectStore {
             projectURL: projectURL,
             projectJSONURL: projectURL.appendingPathComponent("project.json"),
             videoURL: projectURL.appendingPathComponent("media/screen.mov"),
+            cameraVideoURL: projectURL.appendingPathComponent("media/camera.mov"),
             eventsURL: projectURL.appendingPathComponent("events/input-events.json")
         )
     }
@@ -133,5 +135,6 @@ struct ProjectLocations: Equatable {
     let projectURL: URL
     let projectJSONURL: URL
     let videoURL: URL
+    let cameraVideoURL: URL
     let eventsURL: URL
 }

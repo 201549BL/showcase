@@ -49,7 +49,7 @@ struct ProjectStoreTests {
             frame: CodableRect(CGRect(x: 0, y: 0, width: 1_440, height: 900)),
             scaleFactor: 2
         )
-        let project = RecordingProject(
+        var project = RecordingProject(
             createdAt: Date(timeIntervalSince1970: 1_700_000_000.125),
             recording: RecordingMetadata(
                 source: source,
@@ -60,9 +60,12 @@ struct ProjectStoreTests {
                 includesSystemAudio: true,
                 includesMicrophone: false,
                 videoRelativePath: "media/screen.mov",
-                eventsRelativePath: "events/input-events.json"
-            )
+                eventsRelativePath: "events/input-events.json",
+                cameraVideoRelativePath: "media/camera.mov"
+            ),
+            cameraOverlay: .default
         )
+        project.isAudioMuted = true
         let events = [
             RecordedInputEvent(
                 timestamp: 1.25,
@@ -72,7 +75,8 @@ struct ProjectStoreTests {
                 scrollDeltaX: nil,
                 scrollDeltaY: nil,
                 keyCode: nil,
-                flags: 0
+                flags: 0,
+                cursorStyle: .pointingHand
             )
         ]
 
@@ -113,6 +117,7 @@ struct ProjectStoreTests {
         #expect(events.count == 1)
         #expect(events[0].sourceFrame == nil)
         #expect(events[0].position == CodablePoint(CGPoint(x: 100, y: 200)))
+        #expect(events[0].cursorStyle == nil)
     }
 
     @Test("Reads projects created before zoom behavior settings")
@@ -146,7 +151,8 @@ struct ProjectStoreTests {
                     focusPoint: CodablePoint(CGPoint(x: 800, y: 450)),
                     scale: 1.6,
                     source: .automatic,
-                    transitionDuration: 0.4
+                    transitionDuration: 0.4,
+                    cursorBoundaryFraction: 0.5
                 )
             ]
         )
@@ -155,15 +161,61 @@ struct ProjectStoreTests {
             JSONSerialization.jsonObject(with: encoded) as? [String: Any]
         )
         json.removeValue(forKey: "zoomBehavior")
+        json.removeValue(forKey: "motionBlur")
         var segments = try #require(json["zoomSegments"] as? [[String: Any]])
+        #expect(segments[0]["cursorBoundaryFraction"] as? Double == 0.5)
         segments[0].removeValue(forKey: "transitionDuration")
+        segments[0].removeValue(forKey: "cursorBoundaryFraction")
         json["zoomSegments"] = segments
 
         let legacyData = try JSONSerialization.data(withJSONObject: json)
         let decoded = try JSONDecoder().decode(RecordingProject.self, from: legacyData)
 
+        #expect(decoded.resolvedIsAudioMuted == false)
         #expect(decoded.zoomBehavior == nil)
         #expect(decoded.resolvedZoomBehavior == .legacy)
+        #expect(decoded.motionBlur == nil)
+        #expect(decoded.resolvedMotionBlur == .disabled)
         #expect(decoded.zoomSegments[0].transitionDuration == nil)
+        #expect(decoded.zoomSegments[0].reframes.isEmpty)
+        #expect(decoded.zoomSegments[0].cursorBoundaryFraction == nil)
+        #expect(decoded.zoomSegments[0].resolvedCursorBoundaryFraction == 0.65)
+    }
+
+    @Test("Reads zoom settings saved before camera motion styles")
+    func readsZoomSettingsWithoutMotionStyle() throws {
+        let project = RecordingProject(
+            recording: RecordingMetadata(
+                source: CaptureSourceDescriptor(
+                    kind: .display,
+                    sourceID: 1,
+                    title: "Display",
+                    applicationName: nil,
+                    frame: CodableRect(CGRect(x: 0, y: 0, width: 1_600, height: 900)),
+                    scaleFactor: 1
+                ),
+                width: 1_600,
+                height: 900,
+                framesPerSecond: 60,
+                duration: 3,
+                includesSystemAudio: false,
+                includesMicrophone: false,
+                videoRelativePath: "media/screen.mov",
+                eventsRelativePath: "events/input-events.json"
+            )
+        )
+        let encoded = try JSONEncoder().encode(project)
+        var json = try #require(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        var zoomBehavior = try #require(json["zoomBehavior"] as? [String: Any])
+        zoomBehavior.removeValue(forKey: "motionStyle")
+        json["zoomBehavior"] = zoomBehavior
+
+        let legacyData = try JSONSerialization.data(withJSONObject: json)
+        let decoded = try JSONDecoder().decode(RecordingProject.self, from: legacyData)
+
+        #expect(decoded.zoomBehavior?.motionStyle == nil)
+        #expect(decoded.resolvedZoomBehavior.resolvedMotionStyle == .focused)
     }
 }

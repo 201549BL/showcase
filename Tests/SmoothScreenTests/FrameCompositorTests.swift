@@ -55,6 +55,190 @@ struct FrameCompositorTests {
         #expect(changedPixelCount >= 20)
     }
 
+    @Test("Renders the cursor appearance recorded for the hovered action")
+    func rendersRecordedCursorAppearance() {
+        var project = fixtureProject()
+        project.canvas.aspectRatio = .source
+        project.canvas.padding = 0
+        project.canvas.cornerRadius = 0
+        project.canvas.shadowRadius = 0
+        project.cursor.hideAfter = 10
+        project.cursor.showsClickAnimation = false
+
+        let source = CIImage(
+            color: CIColor(red: 0.08, green: 0.42, blue: 0.73, alpha: 1)
+        ).cropped(to: CGRect(x: 0, y: 0, width: 320, height: 180))
+        let time = CMTime(seconds: 0.5, preferredTimescale: 600)
+        var arrowEvent = cursorEvent(x: 160, y: 90)
+        arrowEvent.cursorStyle = .arrow
+        var handEvent = cursorEvent(x: 160, y: 90)
+        handEvent.cursorStyle = .pointingHand
+
+        let arrow = FrameCompositor(
+            project: project,
+            events: [arrowEvent],
+            quality: .hd
+        ).render(sourceImage: source, at: time)
+        let hand = FrameCompositor(
+            project: project,
+            events: [handEvent],
+            quality: .hd
+        ).render(sourceImage: source, at: time)
+        let baseline = FrameCompositor(
+            project: project,
+            events: [],
+            quality: .hd
+        ).render(sourceImage: source, at: time)
+
+        let arrowPixels = rgbaPixels(in: arrow)
+        let handPixels = rgbaPixels(in: hand)
+        let baselinePixels = rgbaPixels(in: baseline)
+        let handSize = changedPixelSize(
+            between: handPixels,
+            and: baselinePixels,
+            width: Int(hand.extent.width)
+        )
+
+        #expect(arrowPixels != handPixels)
+        #expect(max(handSize.width, handSize.height) >= 10)
+    }
+
+    @Test("Motion blur follows moving cursor poses and leaves still frames sharp")
+    func motionBlurOnlyAffectsMovement() {
+        var project = fixtureProject()
+        project.canvas.aspectRatio = .source
+        project.canvas.padding = 0
+        project.canvas.cornerRadius = 0
+        project.canvas.shadowRadius = 0
+        project.cursor.smoothing = 0
+        project.cursor.hideAfter = 10
+        project.cursor.showsClickAnimation = false
+        let source = CIImage(
+            color: CIColor(red: 0.08, green: 0.42, blue: 0.73, alpha: 1)
+        ).cropped(to: CGRect(x: 0, y: 0, width: 320, height: 180))
+        let time = CMTime(seconds: 0.5, preferredTimescale: 600)
+        let movingEvents = [
+            cursorEvent(timestamp: 0.48, x: 100, y: 90),
+            cursorEvent(timestamp: 0.52, x: 220, y: 90)
+        ]
+        let stationaryEvents = [
+            cursorEvent(timestamp: 0.48, x: 160, y: 90),
+            cursorEvent(timestamp: 0.52, x: 160, y: 90)
+        ]
+
+        project.motionBlur = MotionBlurSettings(amount: 1)
+        let blurredMovement = FrameCompositor(
+            project: project,
+            events: movingEvents,
+            quality: .hd
+        ).render(sourceImage: source, at: time)
+        let blurredStill = FrameCompositor(
+            project: project,
+            events: stationaryEvents,
+            quality: .hd
+        ).render(sourceImage: source, at: time)
+
+        project.motionBlur = .disabled
+        let sharpMovement = FrameCompositor(
+            project: project,
+            events: movingEvents,
+            quality: .hd
+        ).render(sourceImage: source, at: time)
+        let sharpStill = FrameCompositor(
+            project: project,
+            events: stationaryEvents,
+            quality: .hd
+        ).render(sourceImage: source, at: time)
+
+        #expect(rgbaPixels(in: blurredMovement) != rgbaPixels(in: sharpMovement))
+        #expect(rgbaPixels(in: blurredStill) == rgbaPixels(in: sharpStill))
+    }
+
+    @Test("Motion blur does not dim screen pixels away from the moving cursor")
+    func motionBlurPreservesScreenBrightness() {
+        var project = fixtureProject()
+        project.canvas.aspectRatio = .source
+        project.canvas.padding = 0
+        project.canvas.cornerRadius = 0
+        project.canvas.shadowRadius = 0
+        project.cursor.smoothing = 0
+        project.cursor.hideAfter = 10
+        project.cursor.showsClickAnimation = false
+        let source = CIImage(
+            color: CIColor(red: 0.82, green: 0.86, blue: 0.91, alpha: 1)
+        ).cropped(to: CGRect(x: 0, y: 0, width: 320, height: 180))
+        let time = CMTime(seconds: 0.5, preferredTimescale: 600)
+        let movingEvents = [
+            cursorEvent(timestamp: 0.48, x: 100, y: 90),
+            cursorEvent(timestamp: 0.52, x: 220, y: 90)
+        ]
+
+        project.motionBlur = MotionBlurSettings(amount: 0.5)
+        let blurred = FrameCompositor(
+            project: project,
+            events: movingEvents,
+            quality: .hd
+        ).render(sourceImage: source, at: time)
+
+        project.motionBlur = .disabled
+        let sharp = FrameCompositor(
+            project: project,
+            events: movingEvents,
+            quality: .hd
+        ).render(sourceImage: source, at: time)
+
+        let blurredPixels = rgbaPixels(in: blurred)
+        let sharpPixels = rgbaPixels(in: sharp)
+        let sample = (40 * Int(blurred.extent.width) + 40) * 4
+
+        #expect(
+            Array(blurredPixels[sample..<(sample + 4)])
+                == Array(sharpPixels[sample..<(sample + 4)])
+        )
+    }
+
+    @Test("Face camera is composited independently and can be hidden")
+    func compositesFaceCameraOverlay() {
+        var project = fixtureProject()
+        project.canvas.aspectRatio = .source
+        project.canvas.padding = 0
+        project.canvas.cornerRadius = 0
+        project.canvas.shadowRadius = 0
+        project.recording.cameraVideoRelativePath = "media/camera.mov"
+        project.cameraOverlay = .default
+        let screen = CIImage(
+            color: CIColor(red: 0.08, green: 0.42, blue: 0.73, alpha: 1)
+        ).cropped(to: CGRect(x: 0, y: 0, width: 320, height: 180))
+        let camera = CIImage(
+            color: CIColor(red: 0.85, green: 0.12, blue: 0.18, alpha: 1)
+        ).cropped(to: CGRect(x: 0, y: 0, width: 640, height: 480))
+        let provider = StaticCameraFrameProvider(image: camera)
+        let time = CMTime(seconds: 0.5, preferredTimescale: 600)
+
+        let visible = FrameCompositor(
+            project: project,
+            events: [],
+            quality: .hd,
+            cameraFrameProvider: provider
+        ).render(sourceImage: screen, at: time)
+        let withoutProvider = FrameCompositor(
+            project: project,
+            events: [],
+            quality: .hd
+        ).render(sourceImage: screen, at: time)
+
+        project.cameraOverlay?.isVisible = false
+        let hidden = FrameCompositor(
+            project: project,
+            events: [],
+            quality: .hd,
+            cameraFrameProvider: provider
+        ).render(sourceImage: screen, at: time)
+
+        #expect(rgbaPixels(in: visible) != rgbaPixels(in: withoutProvider))
+        #expect(rgbaPixels(in: hidden) == rgbaPixels(in: withoutProvider))
+    }
+
     @Test("Vertical framing keeps the full cursor bitmap inside the viewport")
     func verticalFramingKeepsFullCursorVisible() {
         var project = fixtureProject()
@@ -328,6 +512,37 @@ struct FrameCompositorTests {
         return pixels
     }
 
+    private func changedPixelSize(
+        between first: [UInt8],
+        and second: [UInt8],
+        width: Int
+    ) -> CGSize {
+        guard first.count == second.count, width > 0 else { return .zero }
+
+        var minimumX = width
+        var minimumY = first.count / 4 / width
+        var maximumX = -1
+        var maximumY = -1
+        for pixelIndex in 0..<(first.count / 4) {
+            let byteIndex = pixelIndex * 4
+            guard first[byteIndex..<(byteIndex + 4)] != second[byteIndex..<(byteIndex + 4)] else {
+                continue
+            }
+            let x = pixelIndex % width
+            let y = pixelIndex / width
+            minimumX = min(minimumX, x)
+            minimumY = min(minimumY, y)
+            maximumX = max(maximumX, x)
+            maximumY = max(maximumY, y)
+        }
+
+        guard maximumX >= minimumX, maximumY >= minimumY else { return .zero }
+        return CGSize(
+            width: maximumX - minimumX + 1,
+            height: maximumY - minimumY + 1
+        )
+    }
+
     @MainActor
     private func playerPixels(
         asset: AVAsset,
@@ -447,6 +662,18 @@ struct FrameCompositorTests {
             writer.finishWriting { continuation.resume() }
         }
         #expect(writer.status == .completed)
+    }
+}
+
+private final class StaticCameraFrameProvider: CameraFrameProviding {
+    private let image: CIImage
+
+    init(image: CIImage) {
+        self.image = image
+    }
+
+    func frame(at time: CMTime) -> CIImage? {
+        image
     }
 }
 

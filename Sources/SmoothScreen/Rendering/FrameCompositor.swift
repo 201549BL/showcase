@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import CoreImage
 import CoreImage.CIFilterBuiltins
@@ -9,10 +10,12 @@ final class FrameCompositor {
     private let geometry: CanvasGeometry
     private let cursorPath: CursorPath
     private let cameraEvaluator: CameraEvaluator
-    private let cursorImage: CIImage?
-    private let cursorHotSpot: CGPoint
-    private let cursorNativeSize: CGSize
+    private let motionBlurAmount: Double
+    private let cursorArtworks: [RecordedInputEvent.CursorStyle: CursorArtwork]
+    private let cameraFrameProvider: CameraFrameProviding?
     private let clickEvents: [LocalizedInputEvent]
+    private let zoomSegments: [ZoomSegment]
+    private let cameraClearanceSegmentIDs: Set<UUID>
     private let canvasRect: CGRect
     private let screenMask: CIImage
     private let transparentCanvas: CIImage
@@ -23,9 +26,11 @@ final class FrameCompositor {
         project: RecordingProject,
         events: [RecordedInputEvent],
         quality: ExportQuality,
-        maximumCanvasDimension: Double? = nil
+        maximumCanvasDimension: Double? = nil,
+        cameraFrameProvider: CameraFrameProviding? = nil
     ) {
         self.project = project
+        self.cameraFrameProvider = cameraFrameProvider
         let builtGeometry = CanvasGeometry(
             project: project,
             quality: quality,
@@ -61,38 +66,68 @@ final class FrameCompositor {
             hideAfter: project.cursor.hideAfter
         )
         cursorPath = builtCursorPath
-        let builtCursorHotSpot = CGPoint(x: 2, y: 2)
-        let builtCursorNativeSize = CGSize(width: 32, height: 48)
-        cursorHotSpot = builtCursorHotSpot
-        cursorNativeSize = builtCursorNativeSize
+        motionBlurAmount = min(1, max(0, project.resolvedMotionBlur.amount))
+        let builtCursorArtworks = Self.makeCursorArtworks()
+        cursorArtworks = builtCursorArtworks
         let cursorCanvasScale = max(
             0,
             project.cursor.scale * builtGeometry.canvasSize.height / 1_080
         )
         let halfViewportWidth = max(1, builtGeometry.screenRect.width / 2)
         let halfViewportHeight = max(1, builtGeometry.screenRect.height / 2)
-        let cursorViewportInsets = CursorViewportInsets(
-            left: builtCursorHotSpot.x * cursorCanvasScale / halfViewportWidth,
-            right: (builtCursorNativeSize.width - builtCursorHotSpot.x)
-                * cursorCanvasScale / halfViewportWidth,
-            top: builtCursorHotSpot.y * cursorCanvasScale / halfViewportHeight,
-            bottom: (builtCursorNativeSize.height - builtCursorHotSpot.y)
-                * cursorCanvasScale / halfViewportHeight
-        )
-        cameraEvaluator = CameraEvaluator(
-            segments: project.zoomSegments.sorted { $0.startTime < $1.startTime },
+        let cursorViewportInsets = builtCursorArtworks.values.reduce(
+            CursorViewportInsets.zero
+        ) { insets, artwork in
+            let artworkScale = cursorCanvasScale * artwork.presentationScale
+            return CursorViewportInsets(
+                left: max(
+                    insets.left,
+                    artwork.hotSpot.x * artworkScale / halfViewportWidth
+                ),
+                right: max(
+                    insets.right,
+                    (artwork.nativeSize.width - artwork.hotSpot.x)
+                        * artworkScale / halfViewportWidth
+                ),
+                top: max(
+                    insets.top,
+                    artwork.hotSpot.y * artworkScale / halfViewportHeight
+                ),
+                bottom: max(
+                    insets.bottom,
+                    (artwork.nativeSize.height - artwork.hotSpot.y)
+                        * artworkScale / halfViewportHeight
+                )
+            )
+        }
+        let sortedZoomSegments = project.zoomSegments.sorted { $0.startTime < $1.startTime }
+        zoomSegments = sortedZoomSegments
+        let builtCameraEvaluator = CameraEvaluator(
+            segments: sortedZoomSegments,
             sourceSize: CGSize(
                 width: project.recording.width,
                 height: project.recording.height
             ),
             duration: project.recording.duration,
             cursorPath: builtCursorPath,
-            cursorViewportInsets: cursorViewportInsets
+            cursorViewportInsets: cursorViewportInsets,
+            motionStyle: project.resolvedZoomBehavior.resolvedMotionStyle
         )
+        cameraEvaluator = builtCameraEvaluator
         clickEvents = localizedEvents.filter { $0.isPrimaryClick && $0.position != nil }
+        cameraClearanceSegmentIDs = Self.cameraClearanceSegmentIDs(
+            settings: project.resolvedCameraOverlay,
+            segments: sortedZoomSegments,
+            sourceSize: CGSize(
+                width: project.recording.width,
+                height: project.recording.height
+            ),
+            geometry: builtGeometry,
+            canvasRect: builtCanvasRect,
+            cursorPath: builtCursorPath,
+            cameraEvaluator: builtCameraEvaluator
+        )
 
-        let renderedCursor = Self.makeCursorImage()
-        cursorImage = renderedCursor
     }
 
     var renderSize: CGSize { geometry.canvasSize }
@@ -116,12 +151,10 @@ final class FrameCompositor {
                 y: -sourceImage.extent.minY
             )
         )
-        var screenContent = normalizedSource.transformed(by: transform)
-
-        if let cursorFrame = cursorPath.frame(at: time), cursorFrame.opacity > 0 {
-            let cursor = renderCursor(frame: cursorFrame, cameraTransform: transform)
-            screenContent = cursor.composited(over: screenContent)
-        }
+        var screenContent = motionBlurredScreenContent(
+            sourceImage: normalizedSource,
+            at: time
+        )
 
         if project.cursor.showsClickAnimation,
            let clickRing = renderClickRing(at: time, cameraTransform: transform) {
@@ -136,10 +169,317 @@ final class FrameCompositor {
             ]
         )
 
-        return clippedScreen
+        var composedFrame = clippedScreen
             .composited(over: shadowImage)
             .composited(over: backgroundImage)
             .cropped(to: canvasRect)
+        if let cameraOverlay = renderCameraOverlay(at: compositionTime) {
+            composedFrame = cameraOverlay.composited(over: composedFrame)
+        }
+        return composedFrame.cropped(to: canvasRect)
+    }
+
+    private func renderCameraOverlay(at time: CMTime) -> CIImage? {
+        let settings = project.resolvedCameraOverlay
+        guard
+            project.recording.cameraVideoRelativePath != nil,
+            settings.isVisible,
+            let source = cameraFrameProvider?.frame(at: time),
+            !source.extent.isEmpty
+        else { return nil }
+
+        let seconds = max(0, CMTimeGetSeconds(time))
+        let camera = cameraEvaluator.state(at: seconds)
+        let size = CameraOverlaySizing.size(
+            settings: settings,
+            cameraScale: camera.scale,
+            requiresContentClearance: requiresCameraClearance(at: seconds)
+        )
+        let diameter = max(
+            96 * geometry.canvasSize.height / 1_080,
+            min(geometry.canvasSize.width, geometry.canvasSize.height) * size
+        )
+        let margin = max(16, diameter * 0.08)
+        let rect = cameraOverlayRect(
+            diameter: diameter,
+            margin: margin,
+            corner: settings.corner
+        )
+        let normalized = source.transformed(
+            by: CGAffineTransform(
+                translationX: -source.extent.minX,
+                y: -source.extent.minY
+            )
+        )
+        let mirrored = normalized.transformed(
+            by: CGAffineTransform(
+                a: -1,
+                b: 0,
+                c: 0,
+                d: 1,
+                tx: normalized.extent.width,
+                ty: 0
+            )
+        )
+        let cropSide = min(mirrored.extent.width, mirrored.extent.height)
+        let cropRect = CGRect(
+            x: mirrored.extent.midX - cropSide / 2,
+            y: mirrored.extent.midY - cropSide / 2,
+            width: cropSide,
+            height: cropSide
+        )
+        let scale = diameter / cropSide
+        let cameraImage = mirrored
+            .cropped(to: cropRect)
+            .transformed(
+                by: CGAffineTransform(
+                    a: scale,
+                    b: 0,
+                    c: 0,
+                    d: scale,
+                    tx: rect.minX - cropRect.minX * scale,
+                    ty: rect.minY - cropRect.minY * scale
+                )
+            )
+        let cameraCornerRadius = diameter * 0.25
+        let mask = Self.roundedRectangle(
+            rect: rect,
+            radius: cameraCornerRadius,
+            color: .white
+        )
+        let clippedCamera = cameraImage.applyingFilter(
+            "CIBlendWithMask",
+            parameters: [
+                kCIInputBackgroundImageKey: transparentCanvas,
+                kCIInputMaskImageKey: mask
+            ]
+        )
+        let borderWidth = max(2, 4 * geometry.canvasSize.height / 1_080)
+        let innerRect = rect.insetBy(dx: borderWidth, dy: borderWidth)
+        let inner = Self.roundedRectangle(
+            rect: innerRect,
+            radius: max(0, cameraCornerRadius - borderWidth),
+            color: .white
+        )
+        let border = mask.applyingFilter(
+            "CISourceOutCompositing",
+            parameters: [kCIInputBackgroundImageKey: inner]
+        )
+        let shadow = mask
+            .applyingFilter(
+                "CIColorMatrix",
+                parameters: [
+                    "inputRVector": CIVector(x: 0, y: 0, z: 0, w: 0),
+                    "inputGVector": CIVector(x: 0, y: 0, z: 0, w: 0),
+                    "inputBVector": CIVector(x: 0, y: 0, z: 0, w: 0),
+                    "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 0.32)
+                ]
+            )
+            .applyingFilter(
+                "CIGaussianBlur",
+                parameters: [kCIInputRadiusKey: max(4, diameter * 0.045)]
+            )
+            .transformed(by: CGAffineTransform(translationX: 0, y: -diameter * 0.025))
+        return border
+            .composited(over: clippedCamera)
+            .composited(over: shadow)
+    }
+
+    private func cameraOverlayRect(
+        diameter: Double,
+        margin: Double,
+        corner: CameraOverlaySettings.Corner
+    ) -> CGRect {
+        Self.cameraOverlayRect(
+            in: canvasRect,
+            diameter: diameter,
+            margin: margin,
+            corner: corner
+        )
+    }
+
+    private func requiresCameraClearance(at time: Double) -> Bool {
+        zoomSegments.contains { segment in
+            guard cameraClearanceSegmentIDs.contains(segment.id) else { return false }
+            let settleDuration = max(0.5, segment.transitionDuration ?? 0.5)
+            return time >= segment.startTime && time <= segment.endTime + settleDuration
+        }
+    }
+
+    private static func cameraClearanceSegmentIDs(
+        settings: CameraOverlaySettings,
+        segments: [ZoomSegment],
+        sourceSize: CGSize,
+        geometry: CanvasGeometry,
+        canvasRect: CGRect,
+        cursorPath: CursorPath,
+        cameraEvaluator: CameraEvaluator
+    ) -> Set<UUID> {
+        guard settings.resolvedSizingMode == .adaptive else { return [] }
+
+        let minimumCanvasDimension = min(
+            geometry.canvasSize.width,
+            geometry.canvasSize.height
+        )
+        var result = Set<UUID>()
+        for segment in segments {
+            let size = CameraOverlaySizing.size(
+                settings: settings,
+                cameraScale: segment.scale,
+                requiresContentClearance: false
+            )
+            let diameter = max(
+                96 * geometry.canvasSize.height / 1_080,
+                minimumCanvasDimension * size
+            )
+            let margin = max(16, diameter * 0.08)
+            let overlayRect = cameraOverlayRect(
+                in: canvasRect,
+                diameter: diameter,
+                margin: margin,
+                corner: settings.corner
+            )
+            let attentionPadding = max(
+                32 * geometry.canvasSize.height / 1_080,
+                diameter * 0.12
+            )
+            let protectedRect = overlayRect.insetBy(
+                dx: -attentionPadding,
+                dy: -attentionPadding
+            )
+
+            let sampleInterval = 1.0 / 12.0
+            var sampleTime = max(0, segment.startTime)
+            let endTime = max(sampleTime, segment.endTime)
+            while sampleTime <= endTime + 0.000_001 {
+                if let cursor = cursorPath.frame(at: sampleTime), cursor.opacity > 0 {
+                    let camera = cameraEvaluator.state(at: sampleTime)
+                    let point = canvasPoint(
+                        for: cursor.position,
+                        camera: camera,
+                        sourceSize: sourceSize,
+                        screenRect: geometry.screenRect
+                    )
+                    if protectedRect.contains(point) {
+                        result.insert(segment.id)
+                        break
+                    }
+                }
+                sampleTime += sampleInterval
+            }
+        }
+        return result
+    }
+
+    private static func canvasPoint(
+        for sourcePoint: CGPoint,
+        camera: CameraState,
+        sourceSize: CGSize,
+        screenRect: CGRect
+    ) -> CGPoint {
+        let scale = screenRect.width / max(1, sourceSize.width) * camera.scale
+        return CGPoint(
+            x: screenRect.midX + (sourcePoint.x - camera.focusPoint.x) * scale,
+            y: screenRect.midY - (sourcePoint.y - camera.focusPoint.y) * scale
+        )
+    }
+
+    private static func cameraOverlayRect(
+        in canvasRect: CGRect,
+        diameter: Double,
+        margin: Double,
+        corner: CameraOverlaySettings.Corner
+    ) -> CGRect {
+        let left = canvasRect.minX + margin
+        let right = canvasRect.maxX - margin - diameter
+        let bottom = canvasRect.minY + margin
+        let top = canvasRect.maxY - margin - diameter
+        let origin: CGPoint
+        switch corner {
+        case .topLeft: origin = CGPoint(x: left, y: top)
+        case .topRight: origin = CGPoint(x: right, y: top)
+        case .bottomLeft: origin = CGPoint(x: left, y: bottom)
+        case .bottomRight: origin = CGPoint(x: right, y: bottom)
+        }
+        return CGRect(origin: origin, size: CGSize(width: diameter, height: diameter))
+    }
+
+    private func motionBlurredScreenContent(
+        sourceImage: CIImage,
+        at time: Double
+    ) -> CIImage {
+        let current = screenContent(sourceImage: sourceImage, at: time)
+        guard motionBlurAmount > 0 else { return current }
+
+        // The amount is expressed as a fraction of one 60 fps frame of exposure.
+        // Sampling camera and cursor poses produces true directional trails while
+        // leaving stationary content untouched.
+        let exposureDuration = motionBlurAmount / 60
+        let startTime = max(0, time - exposureDuration / 2)
+        let projectEndTime = project.recording.duration ?? (time + exposureDuration / 2)
+        let endTime = min(projectEndTime, time + exposureDuration / 2)
+        guard hasMotion(from: startTime, to: endTime) else { return current }
+
+        let sampleCount = 5
+        let sampleImages = (0..<sampleCount).map { index in
+            let progress = Double(index) / Double(sampleCount - 1)
+            let sampleTime = startTime + ((endTime - startTime) * progress)
+            return screenContent(sourceImage: sourceImage, at: sampleTime)
+        }
+        return Self.average(sampleImages)
+    }
+
+    private func screenContent(sourceImage: CIImage, at time: Double) -> CIImage {
+        let sourceSize = CGSize(
+            width: project.recording.width,
+            height: project.recording.height
+        )
+        let camera = cameraEvaluator.state(at: time)
+        let transform = cameraTransform(camera, sourceSize: sourceSize)
+        var content = sourceImage.transformed(by: transform)
+
+        if let cursorFrame = cursorPath.frame(at: time), cursorFrame.opacity > 0 {
+            let cursor = renderCursor(frame: cursorFrame, cameraTransform: transform)
+            content = cursor.composited(over: content)
+        }
+        return content
+    }
+
+    private func hasMotion(from startTime: Double, to endTime: Double) -> Bool {
+        guard endTime > startTime else { return false }
+
+        let startCamera = cameraEvaluator.state(at: startTime)
+        let endCamera = cameraEvaluator.state(at: endTime)
+        let focusDistance = hypot(
+            endCamera.focusPoint.x - startCamera.focusPoint.x,
+            endCamera.focusPoint.y - startCamera.focusPoint.y
+        )
+        if focusDistance > 0.1 || abs(endCamera.scale - startCamera.scale) > 0.0001 {
+            return true
+        }
+
+        guard
+            let startCursor = cursorPath.frame(at: startTime),
+            let endCursor = cursorPath.frame(at: endTime)
+        else { return false }
+        return hypot(
+            endCursor.position.x - startCursor.position.x,
+            endCursor.position.y - startCursor.position.y
+        ) > 0.1
+    }
+
+    private static func average(_ images: [CIImage]) -> CIImage {
+        guard let first = images.first else { return CIImage.empty() }
+        return images.dropFirst().enumerated().reduce(first) { result, pair in
+            let accumulatedSampleCount = Double(pair.offset + 2)
+            return pair.element.applyingFilter(
+                "CIMix",
+                parameters: [
+                    kCIInputBackgroundImageKey: result,
+                    "inputAmount": 1 / accumulatedSampleCount
+                ]
+            )
+        }
     }
 
     private func cameraTransform(_ camera: CameraState, sourceSize: CGSize) -> CGAffineTransform {
@@ -160,7 +500,10 @@ final class FrameCompositor {
         frame: CursorPath.Frame,
         cameraTransform: CGAffineTransform
     ) -> CIImage {
-        guard let cursorImage else { return CIImage.empty() }
+        guard
+            let artwork = cursorArtworks[frame.cursorStyle]
+                ?? cursorArtworks[.arrow]
+        else { return CIImage.empty() }
 
         let sourcePoint = CGPoint(
             x: frame.position.x,
@@ -168,13 +511,13 @@ final class FrameCompositor {
         )
         let canvasPoint = sourcePoint.applying(cameraTransform)
         let designScale = geometry.canvasSize.height / 1_080
-        let targetScale = project.cursor.scale * designScale
-        let nativeWidth = max(1, cursorNativeSize.width)
-        let bitmapScale = cursorImage.extent.width / nativeWidth
+        let targetScale = project.cursor.scale * designScale * artwork.presentationScale
+        let nativeWidth = max(1, artwork.nativeSize.width)
+        let bitmapScale = artwork.image.extent.width / nativeWidth
         let imageScale = targetScale / bitmapScale
-        let scaledHeight = cursorImage.extent.height * imageScale
-        let hotSpotX = cursorHotSpot.x * targetScale
-        let hotSpotYFromBottom = scaledHeight - (cursorHotSpot.y * targetScale)
+        let scaledHeight = artwork.image.extent.height * imageScale
+        let hotSpotX = artwork.hotSpot.x * targetScale
+        let hotSpotYFromBottom = scaledHeight - (artwork.hotSpot.y * targetScale)
 
         let transform = CGAffineTransform(
             a: imageScale,
@@ -184,7 +527,7 @@ final class FrameCompositor {
             tx: canvasPoint.x - hotSpotX,
             ty: canvasPoint.y - hotSpotYFromBottom
         )
-        let image = cursorImage.transformed(by: transform)
+        let image = artwork.image.transformed(by: transform)
         guard frame.opacity < 0.999 else { return image }
 
         return image.applyingFilter(
@@ -288,9 +631,160 @@ final class FrameCompositor {
         return filter.outputImage ?? CIImage(color: color).cropped(to: rect)
     }
 
-    private static func makeCursorImage() -> CIImage? {
-        let width = 64
-        let height = 96
+    private static func makeCursorArtworks() -> [RecordedInputEvent.CursorStyle: CursorArtwork] {
+        let fallback = makeArrowArtwork()
+        var artworks: [RecordedInputEvent.CursorStyle: CursorArtwork] = [
+            .arrow: fallback,
+            .pointingHand: makePointingHandArtwork() ?? fallback
+        ]
+        let systemCursors: [(RecordedInputEvent.CursorStyle, NSCursor)] = [
+            (.iBeam, .iBeam),
+            (.openHand, .openHand),
+            (.closedHand, .closedHand),
+            (.crosshair, .crosshair),
+            (.resizeHorizontal, .resizeLeftRight),
+            (.resizeVertical, .resizeUpDown),
+            (.operationNotAllowed, .operationNotAllowed),
+            (.dragCopy, .dragCopy),
+            (.dragLink, .dragLink)
+        ]
+        for (style, cursor) in systemCursors {
+            artworks[style] = systemArtwork(for: cursor) ?? fallback
+        }
+        return artworks
+    }
+
+    private static func systemArtwork(for cursor: NSCursor) -> CursorArtwork? {
+        let highestResolutionRepresentation = cursor.image.representations
+            .compactMap { $0 as? NSBitmapImageRep }
+            .filter { $0.cgImage != nil }
+            .max { lhs, rhs in
+                lhs.pixelsWide * lhs.pixelsHigh < rhs.pixelsWide * rhs.pixelsHigh
+            }
+        guard
+            cursor.image.size.width > 0,
+            cursor.image.size.height > 0,
+            let image = highestResolutionRepresentation?.cgImage
+        else { return nil }
+
+        return CursorArtwork(
+            image: CIImage(cgImage: image),
+            hotSpot: cursor.hotSpot,
+            nativeSize: cursor.image.size,
+            // System cursor images use compact UI dimensions. Recorded-video
+            // cursors need the same emphasized scale as the original artwork.
+            presentationScale: 2
+        )
+    }
+
+    private static func makeArrowArtwork() -> CursorArtwork {
+        let nativeSize = CGSize(width: 32, height: 48)
+        let image = makeCustomCursorImage(nativeSize: nativeSize) { context in
+            let path = CGMutablePath()
+            path.move(to: CGPoint(x: 2.5, y: 45.5))
+            path.addLine(to: CGPoint(x: 2.5, y: 10))
+            path.addLine(to: CGPoint(x: 12, y: 19))
+            path.addLine(to: CGPoint(x: 18.5, y: 4))
+            path.addLine(to: CGPoint(x: 25, y: 7))
+            path.addLine(to: CGPoint(x: 18.5, y: 22))
+            path.addLine(to: CGPoint(x: 30.5, y: 22))
+            path.closeSubpath()
+            drawCursorPath(path, in: context)
+        }
+        return CursorArtwork(
+            image: image ?? CIImage.empty(),
+            hotSpot: CGPoint(x: 2.5, y: 2.5),
+            nativeSize: nativeSize,
+            presentationScale: 1
+        )
+    }
+
+    private static func makePointingHandArtwork() -> CursorArtwork? {
+        let nativeSize = CGSize(width: 38, height: 48)
+        guard let image = makeCustomCursorImage(nativeSize: nativeSize, draw: { context in
+            let path = CGMutablePath()
+            path.move(to: CGPoint(x: 14, y: 46))
+            path.addCurve(
+                to: CGPoint(x: 10, y: 42),
+                control1: CGPoint(x: 11.8, y: 46),
+                control2: CGPoint(x: 10, y: 44.2)
+            )
+            path.addLine(to: CGPoint(x: 10, y: 25))
+            path.addLine(to: CGPoint(x: 8, y: 27.2))
+            path.addCurve(
+                to: CGPoint(x: 2, y: 27.5),
+                control1: CGPoint(x: 6.3, y: 29.1),
+                control2: CGPoint(x: 3.6, y: 29.3)
+            )
+            path.addCurve(
+                to: CGPoint(x: 1.5, y: 21.8),
+                control1: CGPoint(x: 0.4, y: 25.7),
+                control2: CGPoint(x: 0.2, y: 23.3)
+            )
+            path.addLine(to: CGPoint(x: 11.5, y: 10.5))
+            path.addCurve(
+                to: CGPoint(x: 24, y: 4.5),
+                control1: CGPoint(x: 14.7, y: 6.8),
+                control2: CGPoint(x: 19.2, y: 4.5)
+            )
+            path.addCurve(
+                to: CGPoint(x: 36, y: 16.7),
+                control1: CGPoint(x: 30.7, y: 4.5),
+                control2: CGPoint(x: 36, y: 10)
+            )
+            path.addLine(to: CGPoint(x: 36, y: 27))
+            path.addCurve(
+                to: CGPoint(x: 32, y: 31),
+                control1: CGPoint(x: 36, y: 29.2),
+                control2: CGPoint(x: 34.2, y: 31)
+            )
+            path.addCurve(
+                to: CGPoint(x: 28, y: 27),
+                control1: CGPoint(x: 29.8, y: 31),
+                control2: CGPoint(x: 28, y: 29.2)
+            )
+            path.addLine(to: CGPoint(x: 28, y: 31))
+            path.addCurve(
+                to: CGPoint(x: 24, y: 35),
+                control1: CGPoint(x: 28, y: 33.2),
+                control2: CGPoint(x: 26.2, y: 35)
+            )
+            path.addCurve(
+                to: CGPoint(x: 20, y: 31),
+                control1: CGPoint(x: 21.8, y: 35),
+                control2: CGPoint(x: 20, y: 33.2)
+            )
+            path.addLine(to: CGPoint(x: 20, y: 34))
+            path.addCurve(
+                to: CGPoint(x: 18, y: 37.5),
+                control1: CGPoint(x: 20, y: 35.5),
+                control2: CGPoint(x: 19.2, y: 36.8)
+            )
+            path.addLine(to: CGPoint(x: 18, y: 42))
+            path.addCurve(
+                to: CGPoint(x: 14, y: 46),
+                control1: CGPoint(x: 18, y: 44.2),
+                control2: CGPoint(x: 16.2, y: 46)
+            )
+            path.closeSubpath()
+            drawCursorPath(path, in: context)
+        }) else { return nil }
+
+        return CursorArtwork(
+            image: image,
+            hotSpot: CGPoint(x: 14, y: 2),
+            nativeSize: nativeSize,
+            presentationScale: 1
+        )
+    }
+
+    private static func makeCustomCursorImage(
+        nativeSize: CGSize,
+        draw: (CGContext) -> Void
+    ) -> CIImage? {
+        let rasterScale = 16
+        let width = Int(nativeSize.width) * rasterScale
+        let height = Int(nativeSize.height) * rasterScale
         guard
             let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
             let context = CGContext(
@@ -308,28 +802,28 @@ final class FrameCompositor {
         context.setShouldAntialias(true)
         context.setLineJoin(.round)
         context.setLineCap(.round)
+        context.scaleBy(x: Double(rasterScale), y: Double(rasterScale))
+        draw(context)
+        guard let image = context.makeImage() else { return nil }
+        return CIImage(cgImage: image)
+    }
 
-        let path = CGMutablePath()
-        path.move(to: CGPoint(x: 5, y: 91))
-        path.addLine(to: CGPoint(x: 5, y: 20))
-        path.addLine(to: CGPoint(x: 24, y: 38))
-        path.addLine(to: CGPoint(x: 37, y: 8))
-        path.addLine(to: CGPoint(x: 50, y: 14))
-        path.addLine(to: CGPoint(x: 37, y: 44))
-        path.addLine(to: CGPoint(x: 61, y: 44))
-        path.closeSubpath()
-
+    private static func drawCursorPath(_ path: CGPath, in context: CGContext) {
         context.addPath(path)
         context.setFillColor(CGColor(gray: 1, alpha: 1))
         context.fillPath()
         context.addPath(path)
         context.setStrokeColor(CGColor(gray: 0.05, alpha: 1))
-        context.setLineWidth(5)
+        context.setLineWidth(2.5)
         context.strokePath()
-
-        guard let image = context.makeImage() else { return nil }
-        return CIImage(cgImage: image)
     }
+}
+
+private struct CursorArtwork {
+    let image: CIImage
+    let hotSpot: CGPoint
+    let nativeSize: CGSize
+    let presentationScale: Double
 }
 
 private extension CIColor {

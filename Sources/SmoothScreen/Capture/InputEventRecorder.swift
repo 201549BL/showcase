@@ -1,4 +1,5 @@
 import ApplicationServices
+import AppKit
 import CoreMedia
 import Foundation
 
@@ -27,6 +28,7 @@ final class InputEventRecorder {
     private let readySemaphore = DispatchSemaphore(value: 0)
     private let finishedSemaphore = DispatchSemaphore(value: 0)
     private var startupError: Error?
+    private var lastCursorStyle: RecordedInputEvent.CursorStyle?
 
     func start(
         at startTime: CMTime,
@@ -47,6 +49,7 @@ final class InputEventRecorder {
                 ? SourceFrameTracker(source: source)
                 : nil
             startupError = nil
+            lastCursorStyle = nil
         }
 
         let thread = Thread { [weak self] in
@@ -115,10 +118,16 @@ final class InputEventRecorder {
         }
 
         CFRunLoopAddSource(currentRunLoop, source, .commonModes)
+        let cursorTimer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            self?.captureCursorAppearance()
+        }
+        RunLoop.current.add(cursorTimer, forMode: .common)
+        captureCursorAppearance()
         CGEvent.tapEnable(tap: tap, enable: true)
         readySemaphore.signal()
         CFRunLoopRun()
 
+        cursorTimer.invalidate()
         CGEvent.tapEnable(tap: tap, enable: false)
         CFRunLoopRemoveSource(currentRunLoop, source, .commonModes)
         lock.withLock {
@@ -139,6 +148,16 @@ final class InputEventRecorder {
         let sourceFrame = hasPosition
             ? lock.withLock { sourceFrameTracker?.frame(at: timestamp) }
             : nil
+        let sampledCursorStyle = hasPosition
+            ? lock.withLock { lastCursorStyle }
+            : nil
+        let cursorStyle: RecordedInputEvent.CursorStyle?
+        switch type {
+        case .leftMouseDown, .leftMouseDragged, .rightMouseDragged:
+            cursorStyle = sampledCursorStyle?.draggingVariant
+        default:
+            cursorStyle = sampledCursorStyle
+        }
 
         let recorded = RecordedInputEvent(
             timestamp: timestamp,
@@ -155,7 +174,8 @@ final class InputEventRecorder {
                 ? event.getDoubleValueField(.scrollWheelEventPointDeltaAxis1)
                 : nil,
             keyCode: isKey ? event.getIntegerValueField(.keyboardEventKeycode) : nil,
-            flags: event.flags.rawValue
+            flags: event.flags.rawValue,
+            cursorStyle: cursorStyle
         )
 
         lock.withLock {
@@ -163,10 +183,69 @@ final class InputEventRecorder {
         }
     }
 
+    private func captureCursorAppearance() {
+        guard
+            let cursorStyle = CursorStyleDetector.currentStyle(),
+            let position = CGEvent(source: nil)?.location
+        else { return }
+
+        let now = CMClockGetTime(CMClockGetHostTimeClock())
+        lock.withLock {
+            guard cursorStyle != lastCursorStyle else { return }
+
+            let timestamp = max(0, CMTimeGetSeconds(now - startTime))
+            let sourceFrame = sourceFrameTracker?.frame(at: timestamp)
+            lastCursorStyle = cursorStyle
+            capturedEvents.append(RecordedInputEvent(
+                timestamp: timestamp,
+                type: .mouseMoved,
+                position: CodablePoint(position),
+                sourceFrame: sourceFrame.map(CodableRect.init),
+                buttonNumber: nil,
+                scrollDeltaX: nil,
+                scrollDeltaY: nil,
+                keyCode: nil,
+                flags: 0,
+                cursorStyle: cursorStyle
+            ))
+        }
+    }
+
     private func eventMask(for types: [CGEventType]) -> CGEventMask {
         types.reduce(CGEventMask(0)) { mask, type in
             mask | (CGEventMask(1) << type.rawValue)
         }
+    }
+}
+
+private enum CursorStyleDetector {
+    private static let signatures: [(Data, RecordedInputEvent.CursorStyle)] = [
+        signature(for: .arrow).map { ($0, .arrow) },
+        signature(for: .pointingHand).map { ($0, .pointingHand) },
+        signature(for: .iBeam).map { ($0, .iBeam) },
+        signature(for: .openHand).map { ($0, .openHand) },
+        signature(for: .closedHand).map { ($0, .closedHand) },
+        signature(for: .crosshair).map { ($0, .crosshair) },
+        signature(for: .resizeLeft).map { ($0, .resizeHorizontal) },
+        signature(for: .resizeRight).map { ($0, .resizeHorizontal) },
+        signature(for: .resizeLeftRight).map { ($0, .resizeHorizontal) },
+        signature(for: .resizeUp).map { ($0, .resizeVertical) },
+        signature(for: .resizeDown).map { ($0, .resizeVertical) },
+        signature(for: .resizeUpDown).map { ($0, .resizeVertical) },
+        signature(for: .operationNotAllowed).map { ($0, .operationNotAllowed) },
+        signature(for: .dragCopy).map { ($0, .dragCopy) },
+        signature(for: .dragLink).map { ($0, .dragLink) }
+    ].compactMap { $0 }
+
+    static func currentStyle() -> RecordedInputEvent.CursorStyle? {
+        guard let signature = NSCursor.currentSystem?.image.tiffRepresentation else {
+            return nil
+        }
+        return signatures.first(where: { $0.0 == signature })?.1 ?? .arrow
+    }
+
+    private static func signature(for cursor: NSCursor) -> Data? {
+        cursor.image.tiffRepresentation
     }
 }
 

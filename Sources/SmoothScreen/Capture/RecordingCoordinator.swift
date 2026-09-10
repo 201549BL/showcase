@@ -13,6 +13,7 @@ final class RecordingCoordinator {
     private let projectStore: ProjectStore
     private let sourceService: CaptureSourceService
     private let screenRecorder: ScreenCaptureRecorder
+    private let webcamRecorder: WebcamRecorder
     private let inputRecorder: InputEventRecorder
 
     private var activeProject: RecordingProject?
@@ -23,18 +24,21 @@ final class RecordingCoordinator {
         projectStore: ProjectStore = ProjectStore(),
         sourceService: CaptureSourceService = CaptureSourceService(),
         screenRecorder: ScreenCaptureRecorder = ScreenCaptureRecorder(),
+        webcamRecorder: WebcamRecorder = WebcamRecorder(),
         inputRecorder: InputEventRecorder = InputEventRecorder()
     ) {
         self.projectStore = projectStore
         self.sourceService = sourceService
         self.screenRecorder = screenRecorder
+        self.webcamRecorder = webcamRecorder
         self.inputRecorder = inputRecorder
     }
 
     func start(
         source descriptor: CaptureSourceDescriptor,
         includesSystemAudio: Bool,
-        includesMicrophone: Bool
+        includesMicrophone: Bool,
+        includesCamera: Bool
     ) async throws -> URL {
         let resolvedSource = try await sourceService.resolve(descriptor)
         let locations = try projectStore.createProjectDirectory(named: projectName())
@@ -50,13 +54,24 @@ final class RecordingCoordinator {
             includesSystemAudio: includesSystemAudio,
             includesMicrophone: includesMicrophone,
             videoRelativePath: "media/screen.mov",
-            eventsRelativePath: "events/input-events.json"
+            eventsRelativePath: "events/input-events.json",
+            cameraVideoRelativePath: includesCamera ? "media/camera.mov" : nil
         )
-        let project = RecordingProject(recording: metadata)
+        let project = RecordingProject(
+            recording: metadata,
+            canvas: BackgroundPreferences().canvasForNewRecording,
+            cameraOverlay: includesCamera ? .default : nil
+        )
         try projectStore.save(project, to: locations)
 
         let startTime = CMClockGetTime(CMClockGetHostTimeClock())
         do {
+            if includesCamera {
+                try await webcamRecorder.start(
+                    outputURL: locations.cameraVideoURL,
+                    startTime: startTime
+                )
+            }
             try inputRecorder.start(at: startTime, source: descriptor)
             try await screenRecorder.start(
                 source: resolvedSource,
@@ -68,6 +83,7 @@ final class RecordingCoordinator {
             )
         } catch {
             _ = inputRecorder.stop()
+            if includesCamera { await webcamRecorder.cancel() }
             throw error
         }
 
@@ -91,6 +107,16 @@ final class RecordingCoordinator {
             captureResult = .success(try await screenRecorder.stop())
         } catch {
             captureResult = .failure(error)
+        }
+        let cameraResult: Result<Void, Error>
+        if project.recording.cameraVideoRelativePath != nil {
+            do {
+                cameraResult = .success(try await webcamRecorder.stop())
+            } catch {
+                cameraResult = .failure(error)
+            }
+        } else {
+            cameraResult = .success(())
         }
         let events = inputRecorder.stop()
         let endTime = CMClockGetTime(CMClockGetHostTimeClock())
@@ -124,6 +150,7 @@ final class RecordingCoordinator {
         recordingStartTime = nil
 
         let statistics = try captureResult.get()
+        try cameraResult.get()
 
         return CompletedRecording(
             projectURL: locations.projectURL,

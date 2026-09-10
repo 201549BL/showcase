@@ -7,9 +7,11 @@ import Testing
 
 @Suite("Video export")
 struct ExportTests {
-    @Test("Exports a composed MP4 with the expected dimensions")
+    @Test("Exports a composed MP4 in each output format", arguments: [
+        CanvasSettings.AspectRatio.source, .landscape, .square, .vertical
+    ])
     @MainActor
-    func exportsComposedVideo() async throws {
+    func exportsComposedVideo(format: CanvasSettings.AspectRatio) async throws {
         let temporaryRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: temporaryRoot) }
@@ -41,7 +43,7 @@ struct ExportTests {
                 eventsRelativePath: "events/input-events.json"
             )
         )
-        project.canvas.aspectRatio = .source
+        project.canvas.aspectRatio = format
         project.timeline = TimelineSettings(trimStart: 0.2, trimEnd: 0.8)
         project.zoomSegments = [
             ZoomSegment(
@@ -77,7 +79,14 @@ struct ExportTests {
         let tracks = try await outputAsset.loadTracks(withMediaType: .video)
         let naturalSize = try await tracks[0].load(.naturalSize)
         let outputDuration = CMTimeGetSeconds(try await outputAsset.load(.duration))
-        #expect(naturalSize == CGSize(width: 320, height: 180))
+        let expectedSize: CGSize
+        switch format {
+        case .source: expectedSize = CGSize(width: 320, height: 180)
+        case .landscape: expectedSize = CGSize(width: 1920, height: 1080)
+        case .square: expectedSize = CGSize(width: 1080, height: 1080)
+        case .vertical: expectedSize = CGSize(width: 1080, height: 1920)
+        }
+        #expect(naturalSize == expectedSize)
         #expect(outputDuration > 0.55 && outputDuration < 0.7)
 
         let frameTimes = try framePresentationTimes(asset: outputAsset, track: tracks[0])
@@ -88,7 +97,7 @@ struct ExportTests {
             .max() ?? 0
         #expect(largestFrameGap < 0.025)
 
-        if ProcessInfo.processInfo.environment["SMOOTHSCREEN_KEEP_FIXTURE"] == "1" {
+        if format == .source && ProcessInfo.processInfo.environment["SMOOTHSCREEN_KEEP_FIXTURE"] == "1" {
             let retained = URL(fileURLWithPath: ".build/export-fixture.mp4")
             try? FileManager.default.removeItem(at: retained)
             try FileManager.default.copyItem(at: outputURL, to: retained)

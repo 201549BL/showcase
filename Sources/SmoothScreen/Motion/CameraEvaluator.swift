@@ -77,14 +77,16 @@ struct CameraEvaluator {
         sourceSize: CGSize,
         duration: Double? = nil,
         cursorPath: CursorPath? = nil,
-        cursorViewportInsets: CursorViewportInsets = .zero
+        cursorViewportInsets: CursorViewportInsets = .zero,
+        motionStyle: ZoomBehaviorSettings.MotionStyle = .focused
     ) {
         trajectory = CameraTrajectory(
             segments: segments,
             sourceSize: sourceSize,
             duration: duration,
             cursorPath: cursorPath,
-            cursorViewportInsets: cursorViewportInsets
+            cursorViewportInsets: cursorViewportInsets,
+            motionStyle: motionStyle
         )
     }
 
@@ -95,21 +97,61 @@ struct CameraEvaluator {
 
 private struct CameraTrajectory {
     private struct Configuration {
+        let motionStyle: ZoomBehaviorSettings.MotionStyle
         let sampleRate = 120.0
         let defaultTransitionDuration = 0.5
         let minimumTransitionDuration = 0.18
-        let springSettlingConstant = 4.75
-        let maximumConnectedGap = 2.75
-        let connectedTravelFraction = 0.5
-        let travelZoneFraction = 0.65
-        // A settled cursor must cross this wider line before movement is
-        // considered intentional. The target then takes over continuously.
-        let cursorFollowActivationFraction = 0.72
         let cursorIntentRestDuration = 0.12
-        let cursorIntentTakeoverDuration = 0.12
         let cursorVisibilityOuterFraction = 1.0
-        let cursorFollowDuration = 0.35
-        let cursorFeedForwardRampDuration = 0.45
+
+        func cursorFollowActivationFraction(for segment: ZoomSegment) -> Double {
+            min(0.98, segment.resolvedCursorBoundaryFraction + 0.07)
+        }
+
+        var springSettlingConstant: Double {
+            switch motionStyle {
+            case .focused: return 4.75
+            case .smooth: return 3.6
+            }
+        }
+
+        func cursorIntentTakeoverDuration(for scale: Double) -> Double {
+            switch motionStyle {
+            case .focused: return scale >= 1.9 ? 0.08 : 0.12
+            case .smooth: return 0.2
+            }
+        }
+
+        func cursorFollowDuration(for scale: Double) -> Double {
+            switch motionStyle {
+            case .focused: return scale >= 1.9 ? 0.28 : 0.35
+            case .smooth: return 0.55
+            }
+        }
+
+        func cursorReframeDuration(for scale: Double, movementDuration: Double) -> Double {
+            switch motionStyle {
+            case .focused:
+                let minimum = scale >= 1.9 ? 0.6 : 0.65
+                return min(1.4, max(minimum, movementDuration * 1.5))
+            case .smooth:
+                return min(1.6, max(0.75, movementDuration * 1.7))
+            }
+        }
+
+        func authoredReframeDuration(for scale: Double) -> Double {
+            switch motionStyle {
+            case .focused: return scale >= 1.9 ? 0.42 : 0.5
+            case .smooth: return 0.75
+            }
+        }
+
+        func cursorFeedForwardRampDuration(for scale: Double) -> Double {
+            switch motionStyle {
+            case .focused: return scale >= 1.9 ? 0.3 : 0.45
+            case .smooth: return 0.7
+            }
+        }
     }
 
     private struct Target {
@@ -118,6 +160,8 @@ private struct CameraTrajectory {
         var segment: ZoomSegment?
         var cursorVisibilitySegment: ZoomSegment?
         var cursorSteeringPosition: CGPoint? = nil
+        var usesDeliberateReframe = false
+        var authoredReframeID: UUID? = nil
     }
 
     private struct CursorFollower {
@@ -288,8 +332,11 @@ private struct CameraTrajectory {
 
         var persistentSegmentID: UUID?
         var anchor: CGPoint?
-        private var hasAutomaticContext = false
+        private var authoredReframeID: UUID?
+        private var hasZoomContext = false
         private var needsQuietSlopRefresh = false
+        private var observedReframingTarget: CursorPath.ReframingTarget?
+        private var activeReframingTarget: CursorPath.ReframingTarget?
         private var horizontalIntentGate = AxisIntentGate()
         private var verticalIntentGate = AxisIntentGate()
 
@@ -302,21 +349,18 @@ private struct CameraTrajectory {
             configuration: Configuration
         ) -> Target {
             guard
-                let segment = target.cursorVisibilitySegment,
-                segment.source == .automatic
+                let segment = target.cursorVisibilitySegment
             else {
                 reset()
                 return target
             }
 
-            if !hasAutomaticContext {
-                hasAutomaticContext = true
+            if !hasZoomContext {
+                hasZoomContext = true
                 horizontalIntentGate.reset()
                 verticalIntentGate.reset()
             }
-            let persistentSegment = target.segment.flatMap {
-                $0.source == .automatic ? $0 : nil
-            }
+            let persistentSegment = target.segment
             let followsPersistentTarget = persistentSegment != nil
             let changedPersistentSegment = persistentSegment.map {
                 persistentSegmentID != $0.id
@@ -324,7 +368,25 @@ private struct CameraTrajectory {
             if let persistentSegment, changedPersistentSegment {
                 persistentSegmentID = persistentSegment.id
                 anchor = target.state.focusPoint
+                authoredReframeID = target.authoredReframeID
                 needsQuietSlopRefresh = true
+                observedReframingTarget = nil
+                activeReframingTarget = nil
+            } else if
+                followsPersistentTarget,
+                target.authoredReframeID != nil,
+                target.authoredReframeID != authoredReframeID
+            {
+                // Authored camera points own the composition. Start one
+                // deliberate move to the new viewbox, then let cursor framing
+                // intervene only if visibility is at risk.
+                authoredReframeID = target.authoredReframeID
+                anchor = target.state.focusPoint
+                needsQuietSlopRefresh = true
+                observedReframingTarget = nil
+                activeReframingTarget = nil
+                horizontalIntentGate.reset()
+                verticalIntentGate.reset()
             }
 
             guard
@@ -349,22 +411,96 @@ private struct CameraTrajectory {
             )
             let halfWidth = sourceSize.width / (2 * targetScale)
             let halfHeight = sourceSize.height / (2 * targetScale)
+            let travelZoneFraction = segment.resolvedCursorBoundaryFraction
+            let activationFraction = configuration.cursorFollowActivationFraction(
+                for: segment
+            )
             let horizontalRange = viewportInsets.horizontalRange(
                 halfExtent: halfWidth,
-                viewportFraction: configuration.travelZoneFraction
+                viewportFraction: travelZoneFraction
             )
             let verticalRange = viewportInsets.verticalRange(
                 halfExtent: halfHeight,
-                viewportFraction: configuration.travelZoneFraction
+                viewportFraction: travelZoneFraction
             )
             let horizontalActivationRange = viewportInsets.horizontalRange(
                 halfExtent: halfWidth,
-                viewportFraction: configuration.cursorFollowActivationFraction
+                viewportFraction: activationFraction
             )
             let verticalActivationRange = viewportInsets.verticalRange(
                 halfExtent: halfHeight,
-                viewportFraction: configuration.cursorFollowActivationFraction
+                viewportFraction: activationFraction
             )
+
+            // Rendering has the complete recorded cursor path available. Once a
+            // movement burst begins, frame its endpoint (or its click) as one
+            // stable composition instead of chasing every intermediate sample.
+            // The current cursor remains the visibility input below, so this
+            // look-ahead cannot hide it or begin during a preceding idle gap.
+            let reframingTarget = cursorPath?.reframingTarget(at: time)
+            if persistentSegment?.source == .automatic,
+                let reframingTarget,
+                reframingTarget != observedReframingTarget
+            {
+                observedReframingTarget = reframingTarget
+                let viewportWidth = sourceSize.width / targetScale
+                let viewportHeight = sourceSize.height / targetScale
+                let meaningfulTravel = min(viewportWidth, viewportHeight) * 0.12
+                let burstTravel = hypot(
+                    reframingTarget.maximumPosition.x - reframingTarget.minimumPosition.x,
+                    reframingTarget.maximumPosition.y - reframingTarget.minimumPosition.y
+                )
+
+                if burstTravel >= meaningfulTravel {
+                    activeReframingTarget = reframingTarget
+                    horizontalIntentGate.reset()
+                    verticalIntentGate.reset()
+                    targetAnchor.x = plannedAnchor(
+                        current: targetAnchor.x,
+                        minimumCursor: reframingTarget.minimumPosition.x,
+                        maximumCursor: reframingTarget.maximumPosition.x,
+                        destination: reframingTarget.position.x,
+                        cursorRange: horizontalActivationRange
+                    )
+                    targetAnchor.y = plannedAnchor(
+                        current: targetAnchor.y,
+                        minimumCursor: reframingTarget.minimumPosition.y,
+                        maximumCursor: reframingTarget.maximumPosition.y,
+                        destination: reframingTarget.position.y,
+                        cursorRange: verticalActivationRange
+                    )
+                    targetAnchor = CameraTrajectory.clampedFocus(
+                        targetAnchor,
+                        sourceSize: sourceSize,
+                        scale: targetScale
+                    )
+                    anchor = targetAnchor
+                }
+            }
+
+            if followsPersistentTarget, activeReframingTarget != nil {
+                let movementDuration = activeReframingTarget.map {
+                    max(0, $0.arrivalTime - $0.burstStartTime)
+                } ?? 0
+                var adjusted = adjustedTarget(
+                    target,
+                    anchor: anchor ?? targetAnchor,
+                    sourceSize: sourceSize,
+                    configuration: configuration,
+                    responseDurationOverride: configuration.cursorReframeDuration(
+                        for: targetScale,
+                        movementDuration: movementDuration
+                    )
+                )
+                adjusted.cursorSteeringPosition = cursorFrame.position
+                adjusted.usesDeliberateReframe = true
+                return adjusted
+            }
+
+            if reframingTarget == nil {
+                observedReframingTarget = nil
+            }
+
             let horizontalNegativeSlop = horizontalRange.lowerBound
                 - horizontalActivationRange.lowerBound
             let horizontalPositiveSlop = horizontalActivationRange.upperBound
@@ -402,7 +538,7 @@ private struct CameraTrajectory {
                 positiveSlop: horizontalPositiveSlop,
                 isOutsideSafetyRange: !horizontalOuterRange.contains(horizontalCursorDelta),
                 deltaTime: 1 / configuration.sampleRate,
-                takeoverDuration: configuration.cursorIntentTakeoverDuration,
+                takeoverDuration: configuration.cursorIntentTakeoverDuration(for: targetScale),
                 restDuration: configuration.cursorIntentRestDuration
             )
             let steeringY = verticalIntentGate.position(
@@ -413,7 +549,7 @@ private struct CameraTrajectory {
                 positiveSlop: verticalPositiveSlop,
                 isOutsideSafetyRange: !verticalOuterRange.contains(verticalCursorDelta),
                 deltaTime: 1 / configuration.sampleRate,
-                takeoverDuration: configuration.cursorIntentTakeoverDuration,
+                takeoverDuration: configuration.cursorIntentTakeoverDuration(for: targetScale),
                 restDuration: configuration.cursorIntentRestDuration
             )
             targetAnchor.x = steeringX
@@ -440,11 +576,25 @@ private struct CameraTrajectory {
             return adjusted
         }
 
+        private func plannedAnchor(
+            current: CGFloat,
+            minimumCursor: CGFloat,
+            maximumCursor: CGFloat,
+            destination: CGFloat,
+            cursorRange: ClosedRange<Double>
+        ) -> CGFloat {
+            let feasibleLowerBound = Double(maximumCursor) - cursorRange.upperBound
+            let feasibleUpperBound = Double(minimumCursor) - cursorRange.lowerBound
+            guard feasibleLowerBound <= feasibleUpperBound else { return destination }
+            return CGFloat(Double(current).clamped(to: feasibleLowerBound...feasibleUpperBound))
+        }
+
         private func adjustedTarget(
             _ target: Target,
             anchor: CGPoint,
             sourceSize: CGSize,
-            configuration: Configuration
+            configuration: Configuration,
+            responseDurationOverride: Double? = nil
         ) -> Target {
             let scale = max(1, target.state.scale)
             let focus = CameraTrajectory.clampedFocus(
@@ -455,10 +605,14 @@ private struct CameraTrajectory {
             var adjusted = target
             adjusted.state = CameraState(scale: scale, focusPoint: focus)
             if focus.distance(to: target.state.focusPoint) > 0.5 {
-                adjusted.responseDuration = min(
-                    adjusted.responseDuration,
-                    configuration.cursorFollowDuration
-                )
+                if let responseDurationOverride {
+                    adjusted.responseDuration = responseDurationOverride
+                } else {
+                    adjusted.responseDuration = min(
+                        adjusted.responseDuration,
+                        configuration.cursorFollowDuration(for: scale)
+                    )
+                }
             }
             return adjusted
         }
@@ -466,8 +620,11 @@ private struct CameraTrajectory {
         mutating func reset() {
             persistentSegmentID = nil
             anchor = nil
-            hasAutomaticContext = false
+            authoredReframeID = nil
+            hasZoomContext = false
             needsQuietSlopRefresh = false
+            observedReframingTarget = nil
+            activeReframingTarget = nil
             horizontalIntentGate.reset()
             verticalIntentGate.reset()
         }
@@ -492,7 +649,6 @@ private struct CameraTrajectory {
         ) {
             guard
                 let segment = target.cursorVisibilitySegment,
-                segment.source == .automatic,
                 let cursorFrame = cursorPath?.frame(at: time),
                 cursorFrame.opacity > 0
             else {
@@ -509,9 +665,23 @@ private struct CameraTrajectory {
                 verticalFollowAmount = 0
             }
 
+            // A deliberate reframe already owns the camera target and timing.
+            // Applying the progressive follower on top would reintroduce the
+            // very sample-by-sample corrections this mode is meant to avoid.
+            // `state(at:)` still applies the exact cursor-visibility rail.
+            if target.usesDeliberateReframe {
+                previousCursorPosition = cursorFrame.position
+                previousFocusPoint = spring.value.cameraState(sourceSize: sourceSize).focusPoint
+                previousPose = spring.value
+                horizontalFollowAmount = 0
+                verticalFollowAmount = 0
+                return
+            }
+
             let camera = spring.value.cameraState(sourceSize: sourceSize)
             let halfWidth = sourceSize.width / (2 * camera.scale)
             let halfHeight = sourceSize.height / (2 * camera.scale)
+            let travelZoneFraction = segment.resolvedCursorBoundaryFraction
             let steeringPosition = target.cursorSteeringPosition ?? cursorFrame.position
             let horizontalDelta = steeringPosition.x - camera.focusPoint.x
             let verticalDelta = steeringPosition.y - camera.focusPoint.y
@@ -525,11 +695,11 @@ private struct CameraTrajectory {
             )
             let horizontalTravelRange = viewportInsets.horizontalRange(
                 halfExtent: halfWidth,
-                viewportFraction: configuration.travelZoneFraction
+                viewportFraction: travelZoneFraction
             )
             let verticalTravelRange = viewportInsets.verticalRange(
                 halfExtent: halfHeight,
-                viewportFraction: configuration.travelZoneFraction
+                viewportFraction: travelZoneFraction
             )
             let horizontalFocusRange = Double(halfWidth)...Double(sourceSize.width - halfWidth)
             let verticalFocusRange = Double(halfHeight)...Double(sourceSize.height - halfHeight)
@@ -545,7 +715,8 @@ private struct CameraTrajectory {
                 focusRange: horizontalFocusRange,
                 previousFollowAmount: horizontalFollowAmount,
                 deltaTime: 1 / configuration.sampleRate,
-                followRampDuration: configuration.cursorFeedForwardRampDuration
+                followRampDuration: configuration.cursorFeedForwardRampDuration(for: segment.scale),
+                allowsFeedForward: !target.usesDeliberateReframe
             )
             let vertical = Self.adjustedAxis(
                 steeringCursor: Double(steeringPosition.y),
@@ -559,7 +730,8 @@ private struct CameraTrajectory {
                 focusRange: verticalFocusRange,
                 previousFollowAmount: verticalFollowAmount,
                 deltaTime: 1 / configuration.sampleRate,
-                followRampDuration: configuration.cursorFeedForwardRampDuration
+                followRampDuration: configuration.cursorFeedForwardRampDuration(for: segment.scale),
+                allowsFeedForward: !target.usesDeliberateReframe
             )
             horizontalFollowAmount = horizontal.followAmount
             verticalFollowAmount = vertical.followAmount
@@ -594,7 +766,8 @@ private struct CameraTrajectory {
             focusRange: ClosedRange<Double>,
             previousFollowAmount: Double,
             deltaTime: Double,
-            followRampDuration: Double
+            followRampDuration: Double,
+            allowsFeedForward: Bool
         ) -> (focus: Double, didAdjust: Bool, followAmount: Double) {
             let followProgress = Self.followProgress(
                 for: springDelta,
@@ -604,6 +777,7 @@ private struct CameraTrajectory {
             var candidateFocus = springFocus
             var followAmount = 0.0
             if
+                allowsFeedForward,
                 followProgress > 0,
                 let previousCursor,
                 let previousFocus,
@@ -699,10 +873,11 @@ private struct CameraTrajectory {
         sourceSize: CGSize,
         duration: Double?,
         cursorPath: CursorPath?,
-        cursorViewportInsets: CursorViewportInsets
+        cursorViewportInsets: CursorViewportInsets,
+        motionStyle: ZoomBehaviorSettings.MotionStyle
     ) {
         self.sourceSize = sourceSize
-        let configuration = Configuration()
+        let configuration = Configuration(motionStyle: motionStyle)
         self.configuration = configuration
         self.cursorPath = cursorPath
         self.cursorViewportInsets = cursorViewportInsets
@@ -803,7 +978,7 @@ private struct CameraTrajectory {
                 segments: segments,
                 sourceSize: sourceSize,
                 configuration: configuration
-            ).cursorVisibilitySegment?.source == .automatic,
+            ).cursorVisibilitySegment != nil,
             let cursorFrame = cursorPath?.frame(at: time),
             cursorFrame.opacity > 0
         else { return state }
@@ -838,40 +1013,40 @@ private struct CameraTrajectory {
             return overview
         }
         let current = segments[currentIndex]
-        let nextIndex = segments.index(after: currentIndex)
-        let next = nextIndex < segments.endIndex ? segments[nextIndex] : nil
 
         if time <= current.endTime {
             let exitDuration = current.transitionDuration
                 ?? configuration.defaultTransitionDuration
-            let exitStart = max(current.focusTime, current.endTime - exitDuration)
+            let sortedReframes = current.reframes.sorted { $0.time < $1.time }
+            let activeReframe = sortedReframes.last { $0.time <= time }
+            let lastReframe = sortedReframes.last
+            let authoredExitStart = lastReframe.map {
+                min(
+                    current.endTime,
+                    $0.time + configuration.authoredReframeDuration(for: $0.scale)
+                )
+            } ?? current.focusTime
+            let exitStart = max(
+                current.focusTime,
+                max(current.endTime - exitDuration, authoredExitStart)
+            )
 
             if time < exitStart {
+                let state = activeReframe.map {
+                    clampedState(for: $0, sourceSize: sourceSize)
+                } ?? clampedState(for: current, sourceSize: sourceSize)
                 return Target(
-                    state: clampedState(for: current, sourceSize: sourceSize),
-                    responseDuration: max(
+                    state: state,
+                    responseDuration: activeReframe.map {
+                        configuration.authoredReframeDuration(for: $0.scale)
+                    } ?? max(
                         configuration.minimumTransitionDuration,
                         current.focusTime - current.startTime
                     ),
                     segment: current,
-                    cursorVisibilitySegment: current
-                )
-            }
-
-            if let next, canTravel(
-                from: current,
-                to: next,
-                sourceSize: sourceSize,
-                configuration: configuration
-            ) {
-                return Target(
-                    state: clampedState(for: next, sourceSize: sourceSize),
-                    responseDuration: max(
-                        configuration.minimumTransitionDuration,
-                        next.startTime - exitStart
-                    ),
-                    segment: next,
-                    cursorVisibilitySegment: next
+                    cursorVisibilitySegment: current,
+                    usesDeliberateReframe: current.source == .manual,
+                    authoredReframeID: activeReframe?.id
                 )
             }
 
@@ -880,23 +1055,6 @@ private struct CameraTrajectory {
                 responseDuration: exitDuration,
                 segment: nil,
                 cursorVisibilitySegment: current
-            )
-        }
-
-        if let next, canTravel(
-            from: current,
-            to: next,
-            sourceSize: sourceSize,
-            configuration: configuration
-        ) {
-            return Target(
-                state: clampedState(for: next, sourceSize: sourceSize),
-                responseDuration: max(
-                    configuration.minimumTransitionDuration,
-                    next.startTime - current.endTime
-                ),
-                segment: next,
-                cursorVisibilitySegment: next
             )
         }
 
@@ -931,26 +1089,6 @@ private struct CameraTrajectory {
         return lowerBound > 0 ? lowerBound - 1 : nil
     }
 
-    private static func canTravel(
-        from first: ZoomSegment,
-        to second: ZoomSegment,
-        sourceSize: CGSize,
-        configuration: Configuration
-    ) -> Bool {
-        guard first.source == .automatic, second.source == .automatic else { return false }
-        let gap = second.startTime - first.endTime
-        guard gap >= 0, gap <= configuration.maximumConnectedGap else { return false }
-
-        let scale = max(1, min(first.scale, second.scale))
-        let viewport = CGSize(width: sourceSize.width / scale, height: sourceSize.height / scale)
-        let firstTarget = clampedFocus(first.focusPoint.cgPoint, sourceSize: sourceSize, scale: scale)
-        let secondTarget = clampedFocus(second.focusPoint.cgPoint, sourceSize: sourceSize, scale: scale)
-        return abs(secondTarget.x - firstTarget.x)
-            <= viewport.width * configuration.connectedTravelFraction
-            && abs(secondTarget.y - firstTarget.y)
-            <= viewport.height * configuration.connectedTravelFraction
-    }
-
     private static func clampedState(
         for segment: ZoomSegment,
         sourceSize: CGSize
@@ -960,6 +1098,21 @@ private struct CameraTrajectory {
             scale: scale,
             focusPoint: clampedFocus(
                 segment.focusPoint.cgPoint,
+                sourceSize: sourceSize,
+                scale: scale
+            )
+        )
+    }
+
+    private static func clampedState(
+        for reframe: ZoomReframe,
+        sourceSize: CGSize
+    ) -> CameraState {
+        let scale = max(1, reframe.scale)
+        return CameraState(
+            scale: scale,
+            focusPoint: clampedFocus(
+                reframe.focusPoint.cgPoint,
                 sourceSize: sourceSize,
                 scale: scale
             )

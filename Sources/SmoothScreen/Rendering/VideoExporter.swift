@@ -42,7 +42,10 @@ final class VideoExporter {
             asset: asset,
             project: project,
             events: events,
-            quality: quality
+            quality: quality,
+            cameraVideoURL: project.recording.cameraVideoRelativePath == nil
+                ? nil
+                : locations.cameraVideoURL
         )
 
         guard let session = AVAssetExportSession(
@@ -70,7 +73,7 @@ final class VideoExporter {
         let audioTracks = try await asset.loadTracks(withMediaType: .audio)
         let audioParameters = audioTracks.map { track in
             let parameters = AVMutableAudioMixInputParameters(track: track)
-            parameters.setVolume(1, at: .zero)
+            parameters.setVolume(project.resolvedIsAudioMuted ? 0 : 1, at: .zero)
             return parameters
         }
         if !audioParameters.isEmpty {

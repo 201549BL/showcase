@@ -108,6 +108,8 @@ struct MainView: View {
                         Toggle("Record microphone", isOn: $model.includesMicrophone)
                             .toggleStyle(.checkbox)
                     }
+                    Toggle("Record face camera", isOn: $model.includesCamera)
+                        .toggleStyle(.checkbox)
                 }
 
                 Spacer()

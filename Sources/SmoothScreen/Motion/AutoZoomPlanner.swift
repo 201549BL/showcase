@@ -3,15 +3,21 @@ import Foundation
 
 struct AutoZoomPlanner {
     struct Configuration: Equatable {
-        var scale = 1.6
-        var leadTime = 0.2
-        var zoomInDuration = 0.4
-        var holdAfterLastClick = 0.9
-        var zoomOutDuration = 0.5
-        var interactionRunInterval = 1.6
-        var overviewPaddingFraction = 0.12
+        var scale = 1.95
+        var leadTime = 0.22
+        var zoomInDuration = 0.55
+        var holdAfterLastClick = 1.3
+        var zoomOutDuration = 0.55
+        var interactionRunInterval = 1.8
+        var minimumOverviewDuration = 1.25
+        var overviewPaddingFraction = 0.14
         var endExclusionDuration = 0.45
     }
+
+    // These are policy, not user-facing tuning knobs. A shot that cannot reach
+    // this scale is clearer as an overview, while spatially separate actions
+    // become separate shots only when there is enough time to reset the view.
+    private let minimumCoherentScale = 1.3
 
     var configuration = Configuration()
 
@@ -27,6 +33,7 @@ struct AutoZoomPlanner {
             holdAfterLastClick: settings.holdDuration,
             zoomOutDuration: settings.transitionDuration,
             interactionRunInterval: settings.groupingInterval,
+            minimumOverviewDuration: settings.preset == .focused ? 0.55 : 1.25,
             overviewPaddingFraction: settings.overviewPaddingFraction,
             endExclusionDuration: 0.45
         )
@@ -59,7 +66,10 @@ struct AutoZoomPlanner {
             if
                 var group = groups.last,
                 let previous = group.last,
-                click.timestamp - previous.timestamp <= configuration.interactionRunInterval
+                shouldJoin(
+                    click,
+                    previous: previous
+                )
             {
                 group.append(click)
                 groups[groups.count - 1] = group
@@ -68,14 +78,14 @@ struct AutoZoomPlanner {
             }
         }
 
-        return groups.compactMap { group in
+        var segments: [ZoomSegment] = groups.compactMap { group in
             guard let first = group.first, let last = group.last else { return nil }
 
             let points = group.map(\.position)
-            let scale = framingScale(points: points, sourceSize: sourceSize)
-            let target = scale < configuration.scale - 0.001
-                ? boundingCenter(points)
-                : weightedFocusPoint(points)
+            let groupScale = framingScale(points: points, sourceSize: sourceSize)
+            let keepsOneComposition = groupScale >= minimumCoherentScale
+            let scale = keepsOneComposition ? groupScale : configuration.scale
+            let target = keepsOneComposition ? boundingCenter(points) : first.position
             let clampedTarget = clampedFocus(
                 target,
                 sourceSize: sourceSize,
@@ -100,9 +110,40 @@ struct AutoZoomPlanner {
                 transitionDuration: configuration.zoomOutDuration
             )
         }
+
+        // A timeline block owns its complete camera lifecycle. If spatial
+        // analysis split a run into two shots, make the first block finish
+        // before the next begins so the timeline truthfully shows the reset.
+        for index in segments.indices.dropLast() {
+            let nextStart = segments[segments.index(after: index)].startTime
+            if segments[index].endTime > nextStart {
+                segments[index].endTime = max(segments[index].focusTime, nextStart)
+            }
+        }
+        return segments
+    }
+
+    private func shouldJoin(
+        _ click: Click,
+        previous: Click
+    ) -> Bool {
+        let gap = click.timestamp - previous.timestamp
+        if gap <= configuration.interactionRunInterval { return true }
+
+        // A new shot is only worthwhile when the previous shot can finish and
+        // leave a readable overview beat before the next entrance begins.
+        let timeNeededForDistinctShot = configuration.leadTime
+            + configuration.holdAfterLastClick
+            + configuration.zoomOutDuration
+            + configuration.minimumOverviewDuration
+        return gap < timeNeededForDistinctShot
     }
 
     private func framingScale(points: [CGPoint], sourceSize: CGSize) -> Double {
+        min(configuration.scale, fittingScale(points: points, sourceSize: sourceSize))
+    }
+
+    private func fittingScale(points: [CGPoint], sourceSize: CGSize) -> Double {
         guard let first = points.first else { return 1 }
 
         var minX = first.x
@@ -122,7 +163,7 @@ struct AutoZoomPlanner {
             + (2 * sourceSize.height * configuration.overviewPaddingFraction)
         let widthScale = sourceSize.width / max(1, paddedWidth)
         let heightScale = sourceSize.height / max(1, paddedHeight)
-        return max(1, min(configuration.scale, widthScale, heightScale))
+        return max(1, min(widthScale, heightScale))
     }
 
     private func boundingCenter(_ points: [CGPoint]) -> CGPoint {
@@ -139,22 +180,6 @@ struct AutoZoomPlanner {
             maxY = max(maxY, point.y)
         }
         return CGPoint(x: (minX + maxX) / 2, y: (minY + maxY) / 2)
-    }
-
-    private func weightedFocusPoint(_ points: [CGPoint]) -> CGPoint {
-        guard let first = points.first else { return .zero }
-        guard points.count > 1 else { return first }
-
-        var weightedX = 0.0
-        var weightedY = 0.0
-        var totalWeight = 0.0
-        for (index, point) in points.enumerated() {
-            let weight = Double(index + 1)
-            weightedX += point.x * weight
-            weightedY += point.y * weight
-            totalWeight += weight
-        }
-        return CGPoint(x: weightedX / totalWeight, y: weightedY / totalWeight)
     }
 
     private func clampedFocus(_ point: CGPoint, sourceSize: CGSize, scale: Double) -> CGPoint {

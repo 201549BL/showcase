@@ -2,11 +2,12 @@ import SwiftUI
 
 struct ZoomTimelineView: View {
     @ObservedObject var model: EditorModel
+    let onEditCameraPosition: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Label("Zoom timeline", systemImage: "timeline.selection")
+                Label("Timeline", systemImage: "timeline.selection")
                     .font(.caption.weight(.semibold))
                 Spacer()
                 Text(timeLabel(model.playheadTime))
@@ -40,7 +41,8 @@ struct ZoomTimelineView: View {
                                 model: model,
                                 zoom: zoom,
                                 geometry: geometry,
-                                isSelected: model.selectedZoomID == zoom.id
+                                isSelected: model.selectedZoomID == zoom.id,
+                                onEditCameraPosition: onEditCameraPosition
                             )
                             .frame(
                                 width: max(24, geometry.width(from: zoom.startTime, to: zoom.endTime)),
@@ -59,6 +61,11 @@ struct ZoomTimelineView: View {
                     .frame(height: 58)
                     .coordinateSpace(name: ZoomTimelineCoordinateSpace.track)
                     .clipped()
+
+                    if model.hasAudio {
+                        audioBand(geometry: geometry)
+                            .frame(height: 36)
+                    }
                 }
             }
         }
@@ -68,6 +75,40 @@ struct ZoomTimelineView: View {
             RoundedRectangle(cornerRadius: 12)
                 .stroke(.white.opacity(0.08))
         }
+    }
+
+    private func audioBand(geometry: TimelineGeometry) -> some View {
+        ZStack(alignment: .leading) {
+            RoundedRectangle(cornerRadius: 7)
+                .fill(Color.white.opacity(0.055))
+            RoundedRectangle(cornerRadius: 7)
+                .fill(Color.teal.opacity(model.project.resolvedIsAudioMuted ? 0.12 : 0.3))
+                .frame(width: max(0, geometry.width(from: model.trimStart, to: model.trimEnd)))
+                .offset(x: geometry.x(for: model.trimStart))
+            HStack {
+                Toggle(isOn: Binding(
+                    get: { !model.project.resolvedIsAudioMuted },
+                    set: { model.setAudioMuted(!$0) }
+                )) {
+                    Label("Recorded audio", systemImage: model.project.resolvedIsAudioMuted
+                        ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                }
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                Spacer()
+                Text(model.project.resolvedIsAudioMuted ? "Muted" : "On")
+                    .foregroundStyle(.secondary)
+            }
+            .font(.caption)
+            .padding(.horizontal, 10)
+            Rectangle()
+                .fill(.white.opacity(0.8))
+                .frame(width: 2)
+                .offset(x: geometry.x(for: model.playheadTime) - 1)
+                .allowsHitTesting(false)
+        }
+        .clipped()
+        .help("Include recorded audio in preview and export")
     }
 
     private func timelineBackground(geometry: TimelineGeometry) -> some View {
@@ -144,6 +185,7 @@ private struct ZoomTimelineBlock: View {
     let zoom: ZoomSegment
     let geometry: TimelineGeometry
     let isSelected: Bool
+    let onEditCameraPosition: () -> Void
 
     @State private var moveProjection: TimelineDragProjection?
     @State private var startProjection: TimelineDragProjection?
@@ -160,8 +202,9 @@ private struct ZoomTimelineBlock: View {
                 .contentShape(Rectangle())
                 .gesture(moveGesture)
                 .onTapGesture {
-                    model.selectZoom(id: zoom.id)
+                    model.selectBaseViewbox(for: zoom.id)
                 }
+                .help("Drag to move. Drag either edge to change duration.")
 
             HStack(spacing: 0) {
                 resizeHandle
@@ -171,8 +214,30 @@ private struct ZoomTimelineBlock: View {
                     .gesture(endResizeGesture)
             }
             .padding(.horizontal, 3)
+
+            ForEach(model.cameraPositions(for: zoom)) { position in
+                Button {
+                    model.selectCameraPosition(position, in: zoom.id)
+                    onEditCameraPosition()
+                } label: {
+                    Image(systemName: "diamond.fill")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(
+                            isSelected && model.selectedViewboxTarget?.id == position.id
+                                ? Color.white
+                                : Color.white.opacity(0.72)
+                        )
+                        .shadow(color: .black.opacity(0.55), radius: 1)
+                }
+                .buttonStyle(.plain)
+                .frame(width: 16, height: 28)
+                .position(
+                    x: geometry.x(for: position.time) - geometry.x(for: zoom.startTime),
+                    y: 17
+                )
+                .help("Camera position at \(timeLabel(position.time))")
+            }
         }
-        .help("Drag to move. Drag either edge to change duration.")
     }
 
     private var blockGradient: LinearGradient {
@@ -269,6 +334,10 @@ private struct ZoomTimelineBlock: View {
                 endProjection = nil
                 model.commitTimelineEdit()
             }
+    }
+
+    private func timeLabel(_ seconds: Double) -> String {
+        String(format: "%02d:%04.1f", Int(seconds) / 60, seconds.truncatingRemainder(dividingBy: 60))
     }
 }
 

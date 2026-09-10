@@ -4,7 +4,9 @@ import SwiftUI
 struct ProjectEditorView: View {
     @ObservedObject var model: EditorModel
     let onClose: () -> Void
-    @State private var isEditingFocus = false
+    @State private var isShowingExportOptions = false
+    @State private var isEditingViewbox = false
+    @State private var isShowingAdvancedZoomControls = false
 
     var body: some View {
         HSplitView {
@@ -44,7 +46,7 @@ struct ProjectEditorView: View {
                 }
 
                 Button {
-                    Task { await model.exportVideo() }
+                    isShowingExportOptions = true
                 } label: {
                     if model.isExporting {
                         ProgressView()
@@ -57,6 +59,9 @@ struct ProjectEditorView: View {
                 .disabled(model.isExporting)
             }
         }
+        .sheet(isPresented: $isShowingExportOptions) {
+            exportOptions
+        }
         .alert(item: $model.presentedError) { error in
             Alert(
                 title: Text("SmoothScreen couldn’t continue"),
@@ -66,8 +71,11 @@ struct ProjectEditorView: View {
         }
         .onChange(of: model.selectedZoomID) {
             if model.selectedZoomID == nil {
-                isEditingFocus = false
+                isEditingViewbox = false
             }
+        }
+        .onChange(of: isEditingViewbox) {
+            model.setViewboxEditing(isEditingViewbox)
         }
         .focusedSceneValue(
             \.editorHistoryActions,
@@ -80,14 +88,52 @@ struct ProjectEditorView: View {
         )
     }
 
+    private var exportOptions: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            Text("Export video")
+                .font(.title2.bold())
+            Text("Export this project in any format. Choose another format to save another version.")
+                .foregroundStyle(.secondary)
+            Picker("Format", selection: binding(\.canvas.aspectRatio, actionName: "Change Format")) {
+                ForEach(CanvasSettings.AspectRatio.allCases, id: \.self) { ratio in
+                    Text(ratio.displayName).tag(ratio)
+                }
+            }
+            Picker("Quality", selection: Binding(get: { model.quality }, set: model.setQuality)) {
+                ForEach(ExportQuality.allCases) { quality in
+                    Text(quality.displayName).tag(quality)
+                }
+            }
+            Text("MP4 · \(model.exportDimensionsLabel)")
+                .font(.callout.monospacedDigit())
+                .foregroundStyle(.secondary)
+            HStack {
+                Button("Cancel") { isShowingExportOptions = false }
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Export…") {
+                    isShowingExportOptions = false
+                    Task { await model.exportVideo() }
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 420)
+    }
+
     private var previewPane: some View {
         VStack(spacing: 0) {
             previewStage
 
             Divider()
 
-            ZoomTimelineView(model: model)
-                .frame(height: 112)
+            ZoomTimelineView(
+                model: model,
+                onEditCameraPosition: { isEditingViewbox = true }
+            )
+                .frame(height: model.hasAudio ? 153 : 112)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
 
@@ -108,20 +154,20 @@ struct ProjectEditorView: View {
                 }
 
                 Button {
-                    isEditingFocus.toggle()
-                    if isEditingFocus, let zoom = model.selectedZoom {
-                        model.seek(to: zoom.focusTime)
+                    isEditingViewbox.toggle()
+                    if isEditingViewbox, let target = model.selectedViewboxTarget {
+                        model.seek(to: target.time)
                     }
                 } label: {
                     Label(
-                        isEditingFocus ? "Done Focusing" : "Set Focus",
-                        systemImage: isEditingFocus ? "checkmark.circle.fill" : "scope"
+                        isEditingViewbox ? "Done" : "Edit Framing",
+                        systemImage: isEditingViewbox ? "checkmark.circle.fill" : "viewfinder"
                     )
                 }
                 .buttonStyle(.bordered)
-                .tint(isEditingFocus ? .accentColor : nil)
+                .tint(isEditingViewbox ? .accentColor : nil)
                 .disabled(model.selectedZoom == nil)
-                .help("Choose the focal point directly in the preview")
+                .help("Move and resize the visible area directly in the preview")
 
                 Spacer()
 
@@ -150,8 +196,12 @@ struct ProjectEditorView: View {
                 ZStack {
                     VideoPlayer(player: model.player)
 
-                    if isEditingFocus, let zoom = model.selectedZoom {
-                        PreviewFocusOverlay(model: model, zoom: zoom)
+                    if
+                        isEditingViewbox,
+                        let target = model.selectedViewboxTarget
+                    {
+                        PreviewViewboxOverlay(model: model, target: target)
+                            .id(target.id)
                     }
                 }
                 .frame(width: previewSize.width, height: previewSize.height)
@@ -166,6 +216,10 @@ struct ProjectEditorView: View {
                 outputSection
                 styleSection
                 cursorSection
+                if model.project.recording.cameraVideoRelativePath != nil {
+                    cameraSection
+                }
+                motionSection
                 zoomSection
 
                 if model.lastExportURL != nil {
@@ -186,10 +240,14 @@ struct ProjectEditorView: View {
                 selection: binding(\.canvas.aspectRatio, actionName: "Change Format")
             ) {
                 ForEach(CanvasSettings.AspectRatio.allCases, id: \.self) { ratio in
-                    Text(aspectName(ratio)).tag(ratio)
+                    Text(ratio.displayName).tag(ratio)
                 }
             }
-            .pickerStyle(.segmented)
+            .pickerStyle(.menu)
+
+            Text(model.exportDimensionsLabel)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
 
             Picker(
                 "Quality",
@@ -229,6 +287,15 @@ struct ProjectEditorView: View {
                             .fill(backgroundGradient(preset))
                             .frame(width: 28, height: 28)
                             .overlay(Circle().stroke(.white.opacity(0.4)))
+                            .overlay {
+                                if model.project.canvas.backgroundStartHex == preset.startHex
+                                    && model.project.canvas.backgroundEndHex == preset.endHex {
+                                    Image(systemName: "checkmark")
+                                        .font(.caption.bold())
+                                        .foregroundStyle(.white)
+                                }
+                            }
+                            .accessibilityLabel(preset.displayName)
                     }
                     .buttonStyle(.plain)
                     .help(preset.displayName)
@@ -258,12 +325,7 @@ struct ProjectEditorView: View {
 
     private var cursorSection: some View {
         editorSection("Cursor") {
-            slider(
-                "Size",
-                value: binding(\.cursor.scale, actionName: "Change Cursor Size"),
-                range: 0.75...2.5,
-                actionName: "Change Cursor Size"
-            )
+            cursorSizeControl
             slider(
                 "Smoothing",
                 value: binding(\.cursor.smoothing, actionName: "Change Cursor Smoothing"),
@@ -283,6 +345,53 @@ struct ProjectEditorView: View {
         }
     }
 
+    private var cursorSizeControl: some View {
+        let scale = model.project.cursor.scale
+        let scaleBinding = binding(\.cursor.scale, actionName: "Change Cursor Size")
+
+        return VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text("Cursor size")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(scale.formatted(.percent.precision(.fractionLength(0))))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .contentTransition(.numericText())
+            }
+
+            HStack(spacing: 8) {
+                Button {
+                    setCursorScale(scale - 0.1)
+                } label: {
+                    Image(systemName: "minus")
+                }
+                .buttonStyle(.borderless)
+                .help("Make cursor smaller")
+                .disabled(scale <= 0.75)
+
+                Slider(value: scaleBinding, in: 0.75...2.5, step: 0.05) { isEditing in
+                    if isEditing {
+                        model.beginHistoryTransaction(actionName: "Change Cursor Size")
+                    } else {
+                        model.commitHistoryTransaction()
+                    }
+                }
+                .accessibilityLabel("Cursor size")
+
+                Button {
+                    setCursorScale(scale + 0.1)
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .buttonStyle(.borderless)
+                .help("Make cursor larger")
+                .disabled(scale >= 2.5)
+            }
+        }
+    }
+
     private var zoomSection: some View {
         editorSection("Zooms") {
             Picker("Behavior", selection: zoomPresetBinding) {
@@ -296,7 +405,18 @@ struct ProjectEditorView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            if model.zoomBehavior.preset == .custom {
+            Picker("Camera motion", selection: zoomMotionStyleBinding) {
+                ForEach(ZoomBehaviorSettings.MotionStyle.allCases) { style in
+                    Text(style.displayName).tag(style)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            Text(zoomMotionStyleDescription)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            DisclosureGroup("Advanced automatic framing", isExpanded: $isShowingAdvancedZoomControls) {
                 VStack(spacing: 10) {
                     slider(
                         "Intensity",
@@ -342,6 +462,7 @@ struct ProjectEditorView: View {
                 .padding(10)
                 .background(.quaternary.opacity(0.32), in: RoundedRectangle(cornerRadius: 8))
             }
+            .disabled(model.zoomBehavior.preset == .off)
 
             Divider()
 
@@ -350,11 +471,14 @@ struct ProjectEditorView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(Array(model.project.zoomSegments.enumerated()), id: \.element.id) { index, zoom in
+                ForEach(model.project.zoomSegments) { zoom in
+                    let positions = model.cameraPositions(for: zoom)
+                    let isSelectedZoom = model.selectedZoomID == zoom.id
+
                     VStack(alignment: .leading, spacing: 7) {
                         HStack {
                             Button {
-                                model.selectZoom(id: zoom.id)
+                                model.selectBaseViewbox(for: zoom.id)
                             } label: {
                                 Label(
                                     timeLabel(zoom.startTime),
@@ -374,36 +498,95 @@ struct ProjectEditorView: View {
                             .buttonStyle(.plain)
                         }
 
-                        slider(
-                            "Scale",
-                            value: zoomScaleBinding(index: index),
-                            range: 1.1...2.5,
-                            actionName: "Change Zoom Scale"
-                        )
-                        slider(
-                            "Focus X",
-                            value: zoomBinding(index: index, keyPath: \.focusPoint.x),
-                            range: 0...Double(model.project.recording.width),
-                            actionName: "Change Zoom Focus"
-                        )
-                        slider(
-                            "Focus Y",
-                            value: zoomBinding(index: index, keyPath: \.focusPoint.y),
-                            range: 0...Double(model.project.recording.height),
-                            actionName: "Change Zoom Focus"
-                        )
-                        slider(
-                            "Start",
-                            value: zoomBinding(index: index, keyPath: \.startTime),
-                            range: 0...model.recordingDuration,
-                            actionName: "Change Zoom Start"
-                        )
-                        slider(
-                            "End",
-                            value: zoomBinding(index: index, keyPath: \.endTime),
-                            range: 0...model.recordingDuration,
-                            actionName: "Change Zoom End"
-                        )
+                        HStack {
+                            Label(
+                                zoom.source == .automatic
+                                    ? "Smart cursor framing"
+                                    : "Custom framing · follows near edges",
+                                systemImage: "cursorarrow.motionlines"
+                            )
+                            Spacer()
+                            Text("\(preciseTimeLabel(zoom.startTime))–\(preciseTimeLabel(zoom.endTime))")
+                                .monospacedDigit()
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                        VStack(alignment: .leading, spacing: 7) {
+                            HStack {
+                                Text("Camera positions")
+                                    .font(.caption.weight(.semibold))
+
+                                Spacer()
+
+                                Button {
+                                    model.selectZoom(id: zoom.id, seekToFocus: false)
+                                    if model.addCameraPositionAtPlayhead(to: zoom.id) != nil {
+                                        isEditingViewbox = true
+                                    }
+                                } label: {
+                                    Label("Add at Playhead", systemImage: "plus")
+                                        .font(.caption)
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(!model.canAddCameraPosition(to: zoom.id))
+                                .help("Add another camera position at the playhead")
+                            }
+
+                            ForEach(Array(positions.enumerated()), id: \.element.id) { index, position in
+                                HStack {
+                                    Button {
+                                        model.selectCameraPosition(position, in: zoom.id)
+                                        isEditingViewbox = true
+                                    } label: {
+                                        Label(
+                                            "Position \(index + 1) · \(preciseTimeLabel(position.time))",
+                                            systemImage: "diamond.fill"
+                                        )
+                                        .font(.caption)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .foregroundStyle(
+                                        isSelectedZoom && model.selectedViewboxTarget?.id == position.id
+                                            ? Color.accentColor
+                                            : Color.primary
+                                    )
+
+                                    Spacer()
+
+                                    if !position.isInitial {
+                                        Button(role: .destructive) {
+                                            model.deleteCameraPosition(id: position.id, from: zoom.id)
+                                        } label: {
+                                            Image(systemName: "xmark.circle")
+                                        }
+                                        .buttonStyle(.plain)
+                                        .help("Delete this camera position")
+                                    }
+                                }
+                            }
+                        }
+                        .padding(8)
+                        .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 7))
+
+                        if isSelectedZoom, let target = model.selectedViewboxTarget {
+                            slider(
+                                "Position magnification · \(preciseTimeLabel(target.time))",
+                                value: selectedCameraPositionScaleBinding(for: zoom),
+                                range: 1.1...3.5,
+                                actionName: "Change Camera Position Magnification"
+                            )
+
+                            Button {
+                                model.seek(to: target.time)
+                                isEditingViewbox = true
+                            } label: {
+                                Label("Edit Framing", systemImage: "viewfinder")
+                            }
+                            .buttonStyle(.bordered)
+                        }
+
+                        zoomCursorBoundaryControl(for: zoom)
                     }
                     .padding(10)
                     .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
@@ -415,6 +598,94 @@ struct ProjectEditorView: View {
                             )
                     }
                 }
+            }
+        }
+    }
+
+    private var motionSection: some View {
+        let amount = model.project.resolvedMotionBlur.amount
+
+        return editorSection("Motion") {
+            VStack(alignment: .leading, spacing: 5) {
+                HStack {
+                    Text("Motion blur")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(
+                        amount == 0
+                            ? "Off"
+                            : amount.formatted(.percent.precision(.fractionLength(0)))
+                    )
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .contentTransition(.numericText())
+                }
+
+                Slider(value: motionBlurBinding, in: 0...1, step: 0.05) { isEditing in
+                    if isEditing {
+                        model.beginHistoryTransaction(actionName: "Change Motion Blur")
+                    } else {
+                        model.commitHistoryTransaction()
+                    }
+                }
+                .accessibilityLabel("Motion blur")
+            }
+
+            Text("Adds blur only while the camera or cursor is moving.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var cameraSection: some View {
+        let settings = model.project.resolvedCameraOverlay
+
+        return editorSection("Face camera") {
+            Toggle(
+                "Show camera",
+                isOn: cameraOverlayBinding(
+                    \.isVisible,
+                    actionName: "Toggle Face Camera"
+                )
+            )
+
+            Picker("Sizing", selection: cameraSizingModeBinding) {
+                ForEach(CameraOverlaySettings.SizingMode.allCases) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            slider(
+                settings.resolvedSizingMode == .adaptive ? "Maximum size" : "Size",
+                value: cameraOverlayBinding(
+                    \.size,
+                    actionName: "Change Face Camera Size"
+                ),
+                range: 0.12...0.4,
+                actionName: "Change Face Camera Size"
+            )
+
+            Picker(
+                "Position",
+                selection: cameraOverlayBinding(
+                    \.corner,
+                    actionName: "Move Face Camera"
+                )
+            ) {
+                Image(systemName: "arrow.up.left").tag(CameraOverlaySettings.Corner.topLeft)
+                Image(systemName: "arrow.up.right").tag(CameraOverlaySettings.Corner.topRight)
+                Image(systemName: "arrow.down.left").tag(CameraOverlaySettings.Corner.bottomLeft)
+                Image(systemName: "arrow.down.right").tag(CameraOverlaySettings.Corner.bottomRight)
+            }
+            .pickerStyle(.segmented)
+            .accessibilityLabel("Face camera position")
+
+            if settings.resolvedSizingMode == .adaptive {
+                Text("Shrinks during close-ups and makes extra room when the cursor path approaches the camera.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -472,59 +743,135 @@ struct ProjectEditorView: View {
         )
     }
 
-    private func zoomScaleBinding(index: Int) -> Binding<Double> {
-        Binding(
-            get: { model.project.zoomSegments[index].scale },
-            set: { value in
-                model.editProject(actionName: "Change Zoom Scale") { project in
-                    guard project.zoomSegments.indices.contains(index) else { return }
-                    project.zoomSegments[index].scale = value
+    private func setCursorScale(_ scale: Double) {
+        let clampedScale = min(2.5, max(0.75, scale))
+        model.editProject(actionName: "Change Cursor Size") { project in
+            project.cursor.scale = clampedScale
+        }
+    }
+
+    private func selectedCameraPositionScaleBinding(for zoom: ZoomSegment) -> Binding<Double> {
+        return Binding(
+            get: {
+                guard model.selectedZoomID == zoom.id else {
+                    return model.project.zoomSegments
+                        .first(where: { $0.id == zoom.id })?
+                        .scale ?? zoom.scale
                 }
+                return model.selectedViewboxTarget?.scale ?? zoom.scale
+            },
+            set: { value in
+                guard
+                    model.selectedZoomID == zoom.id,
+                    let target = model.selectedViewboxTarget
+                else { return }
+                model.setSelectedZoomViewbox(
+                    focusPoint: target.focusPoint,
+                    scale: value
+                )
             }
         )
     }
 
-    private func zoomBinding(
-        index: Int,
-        keyPath: WritableKeyPath<ZoomSegment, Double>
-    ) -> Binding<Double> {
-        Binding(
-            get: { model.project.zoomSegments[index][keyPath: keyPath] },
+    private func zoomCursorBoundaryControl(for zoom: ZoomSegment) -> some View {
+        let reference = ZoomSegmentBindingReference(fallback: zoom)
+        let value = Binding(
+            get: {
+                model.project.zoomSegments
+                    .first(where: { $0.id == zoom.id })?
+                    .resolvedCursorBoundaryFraction
+                    ?? zoom.resolvedCursorBoundaryFraction
+            },
             set: { value in
-                model.editProject(actionName: zoomActionName(keyPath)) { project in
-                    guard project.zoomSegments.indices.contains(index) else { return }
-                    if keyPath == \.startTime {
-                        let latestStart = max(0, project.zoomSegments[index].endTime - 0.1)
-                        project.zoomSegments[index].startTime = min(value, latestStart)
-                        project.zoomSegments[index].focusTime = max(
-                            project.zoomSegments[index].startTime,
-                            project.zoomSegments[index].focusTime
-                        )
-                    } else if keyPath == \.endTime {
-                        let earliestEnd = project.zoomSegments[index].startTime + 0.1
-                        project.zoomSegments[index].endTime = max(value, earliestEnd)
-                        project.zoomSegments[index].focusTime = min(
-                            project.zoomSegments[index].endTime,
-                            project.zoomSegments[index].focusTime
-                        )
-                    } else {
-                        project.zoomSegments[index][keyPath: keyPath] = value
-                    }
+                model.editProject(actionName: "Change Cursor Boundary") { project in
+                    guard let index = reference.index(in: project.zoomSegments) else { return }
+                    project.zoomSegments[index].cursorBoundaryFraction = min(
+                        ZoomSegment.cursorBoundaryRange.upperBound,
+                        max(ZoomSegment.cursorBoundaryRange.lowerBound, value)
+                    )
                 }
             }
         )
-    }
 
-    private func zoomActionName(_ keyPath: WritableKeyPath<ZoomSegment, Double>) -> String {
-        if keyPath == \.startTime { return "Change Zoom Start" }
-        if keyPath == \.endTime { return "Change Zoom End" }
-        return "Change Zoom Focus"
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("Cursor boundary")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(value.wrappedValue.formatted(.percent.precision(.fractionLength(0))))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+            }
+
+            Slider(
+                value: value,
+                in: ZoomSegment.cursorBoundaryRange,
+                step: 0.05
+            ) { isEditing in
+                if isEditing {
+                    model.beginHistoryTransaction(actionName: "Change Cursor Boundary")
+                } else {
+                    model.commitHistoryTransaction()
+                }
+            }
+            .help("Smaller values keep the cursor nearer the center; larger values allow more movement before the camera follows")
+        }
     }
 
     private var zoomPresetBinding: Binding<ZoomBehaviorSettings.Preset> {
         Binding(
             get: { model.zoomBehavior.preset },
             set: model.applyZoomPreset
+        )
+    }
+
+    private var zoomMotionStyleBinding: Binding<ZoomBehaviorSettings.MotionStyle> {
+        Binding(
+            get: { model.zoomBehavior.resolvedMotionStyle },
+            set: model.setZoomMotionStyle
+        )
+    }
+
+    private var motionBlurBinding: Binding<Double> {
+        Binding(
+            get: { model.project.resolvedMotionBlur.amount },
+            set: { amount in
+                model.editProject(actionName: "Change Motion Blur") { project in
+                    project.motionBlur = MotionBlurSettings(
+                        amount: min(1, max(0, amount))
+                    )
+                }
+            }
+        )
+    }
+
+    private var cameraSizingModeBinding: Binding<CameraOverlaySettings.SizingMode> {
+        Binding(
+            get: { model.project.resolvedCameraOverlay.resolvedSizingMode },
+            set: { mode in
+                model.editProject(actionName: "Change Face Camera Sizing") { project in
+                    var settings = project.resolvedCameraOverlay
+                    settings.sizingMode = mode
+                    project.cameraOverlay = settings
+                }
+            }
+        )
+    }
+
+    private func cameraOverlayBinding<Value>(
+        _ keyPath: WritableKeyPath<CameraOverlaySettings, Value>,
+        actionName: String
+    ) -> Binding<Value> {
+        Binding(
+            get: { model.project.resolvedCameraOverlay[keyPath: keyPath] },
+            set: { value in
+                model.editProject(actionName: actionName) { project in
+                    var settings = project.resolvedCameraOverlay
+                    settings[keyPath: keyPath] = value
+                    project.cameraOverlay = settings
+                }
+            }
         )
     }
 
@@ -547,13 +894,22 @@ struct ProjectEditorView: View {
     private var zoomPresetDescription: String {
         switch model.zoomBehavior.preset {
         case .calm:
-            return "Fewer, wider camera moves with slower transitions and longer holds."
+            return "Adapts framing to each interaction and resets between distinct shots."
         case .focused:
-            return "Tighter framing that responds quickly to separate interactions."
+            return "Strong close-ups for dense interfaces and small controls."
         case .off:
             return "Automatic zooms are disabled. Manual zooms remain unchanged."
         case .custom:
             return "Tune automatic zoom intensity, timing, and click grouping."
+        }
+    }
+
+    private var zoomMotionStyleDescription: String {
+        switch model.zoomBehavior.resolvedMotionStyle {
+        case .focused:
+            return "Settles quickly so text and controls remain easy to follow."
+        case .smooth:
+            return "Uses slower, more fluid camera moves for visual demos."
         }
     }
 
@@ -564,17 +920,16 @@ struct ProjectEditorView: View {
         return "No clicks produced an automatic zoom. Move the playhead and add one manually."
     }
 
-    private func aspectName(_ ratio: CanvasSettings.AspectRatio) -> String {
-        switch ratio {
-        case .source: return "Source"
-        case .landscape: return "16:9"
-        case .square: return "1:1"
-        case .vertical: return "9:16"
-        }
-    }
-
     private func timeLabel(_ seconds: Double) -> String {
         String(format: "%02d:%02d", Int(seconds) / 60, Int(seconds) % 60)
+    }
+
+    private func preciseTimeLabel(_ seconds: Double) -> String {
+        String(
+            format: "%02d:%04.1f",
+            Int(seconds) / 60,
+            seconds.truncatingRemainder(dividingBy: 60)
+        )
     }
 
     private func backgroundGradient(_ preset: BackgroundPreset) -> LinearGradient {
@@ -594,58 +949,129 @@ struct ProjectEditorView: View {
     }
 }
 
-private struct PreviewFocusOverlay: View {
+struct ZoomSegmentBindingReference {
+    let fallback: ZoomSegment
+
+    func value(
+        in segments: [ZoomSegment],
+        keyPath: KeyPath<ZoomSegment, Double>
+    ) -> Double {
+        segments.first(where: { $0.id == fallback.id })?[keyPath: keyPath]
+            ?? fallback[keyPath: keyPath]
+    }
+
+    func index(in segments: [ZoomSegment]) -> Int? {
+        segments.firstIndex(where: { $0.id == fallback.id })
+    }
+}
+
+private struct PreviewViewboxOverlay: View {
+    private enum Handle: CaseIterable, Identifiable {
+        case topLeft
+        case topRight
+        case bottomLeft
+        case bottomRight
+
+        var id: Self { self }
+
+        func position(in rect: CGRect) -> CGPoint {
+            switch self {
+            case .topLeft: return CGPoint(x: rect.minX, y: rect.minY)
+            case .topRight: return CGPoint(x: rect.maxX, y: rect.minY)
+            case .bottomLeft: return CGPoint(x: rect.minX, y: rect.maxY)
+            case .bottomRight: return CGPoint(x: rect.maxX, y: rect.maxY)
+            }
+        }
+    }
+
     @ObservedObject var model: EditorModel
-    let zoom: ZoomSegment
-    @State private var pendingLocation: CGPoint?
+    let target: ZoomViewboxEditTarget
+    @State private var pendingFocus: CGPoint?
+    @State private var pendingScale: Double?
     @State private var showsConfirmation = false
+
+    private let coordinateSpaceName = "zoomViewboxEditor"
+    private let scaleRange = 1.1...3.5
 
     var body: some View {
         GeometryReader { proxy in
             let canvas = CanvasGeometry(project: model.project, quality: model.quality)
-            let mapper = PreviewFocusMapper(
+            let mapper = PreviewViewboxMapper(
                 viewSize: proxy.size,
                 canvasSize: canvas.canvasSize,
                 screenRect: canvas.screenRect,
                 sourceSize: CGSize(
                     width: model.project.recording.width,
                     height: model.project.recording.height
-                ),
-                cameraFocus: zoom.focusPoint.cgPoint,
-                cameraScale: zoom.scale
+                )
             )
-            let displayScale = mapper.displayedCanvasRect.width / max(1, canvas.canvasSize.width)
-            let contentRect = CGRect(
-                x: mapper.displayedCanvasRect.minX + canvas.screenRect.minX * displayScale,
-                y: mapper.displayedCanvasRect.minY
-                    + (canvas.canvasSize.height - canvas.screenRect.maxY) * displayScale,
-                width: canvas.screenRect.width * displayScale,
-                height: canvas.screenRect.height * displayScale
+            let focus = pendingFocus ?? target.focusPoint
+            let scale = pendingScale ?? target.scale
+            let viewboxRect = mapper.viewboxRect(
+                focusPoint: focus,
+                scale: scale
             )
 
             ZStack {
-                Color.black.opacity(0.18)
+                Path { path in
+                    path.addRect(CGRect(origin: .zero, size: proxy.size))
+                    path.addRoundedRect(
+                        in: viewboxRect,
+                        cornerSize: CGSize(width: 8, height: 8)
+                    )
+                }
+                .fill(Color.black.opacity(0.52), style: FillStyle(eoFill: true))
+                .allowsHitTesting(false)
 
                 RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.white.opacity(0.65), style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
-                    .frame(width: contentRect.width, height: contentRect.height)
-                    .position(x: contentRect.midX, y: contentRect.midY)
+                    .fill(Color.white.opacity(0.001))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color.white, lineWidth: 2)
+                            .shadow(color: .black.opacity(0.8), radius: 2)
+                    }
+                    .overlay {
+                        Image(systemName: "arrow.up.and.down.and.arrow.left.and.right")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .padding(8)
+                            .background(.black.opacity(0.45), in: Circle())
+                    }
+                    .frame(width: viewboxRect.width, height: viewboxRect.height)
+                    .position(x: viewboxRect.midX, y: viewboxRect.midY)
+                    .contentShape(Rectangle())
+                    .gesture(moveGesture(mapper: mapper, scale: scale))
 
-                focusReticle
-                    .position(x: contentRect.midX, y: contentRect.midY)
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(
+                        Color.accentColor.opacity(0.9),
+                        style: StrokeStyle(lineWidth: 1.5, dash: [6, 5])
+                    )
+                    .frame(
+                        width: viewboxRect.width * target.cursorBoundaryFraction,
+                        height: viewboxRect.height * target.cursorBoundaryFraction
+                    )
+                    .position(x: viewboxRect.midX, y: viewboxRect.midY)
+                    .allowsHitTesting(false)
 
-                if let pendingLocation {
-                    pendingReticle
-                        .position(pendingLocation)
-                        .transition(.scale.combined(with: .opacity))
+                ForEach(Handle.allCases) { handle in
+                    Circle()
+                        .fill(.white)
+                        .overlay(Circle().stroke(Color.accentColor, lineWidth: 2))
+                        .frame(width: 14, height: 14)
+                        .shadow(color: .black.opacity(0.7), radius: 2)
+                        .padding(8)
+                        .contentShape(Rectangle())
+                        .gesture(resizeGesture(mapper: mapper))
+                        .position(handle.position(in: viewboxRect))
                 }
 
                 VStack {
                     Label(
                         showsConfirmation
-                            ? "Focus updated for zoom at \(timeLabel(zoom.startTime))"
-                            : "Editing zoom at \(timeLabel(zoom.startTime)) — click or drag to choose its center",
-                        systemImage: showsConfirmation ? "checkmark.circle.fill" : "scope"
+                            ? "Framing updated at \(timeLabel(target.time))"
+                            : "Cursor moves freely inside the dashed area · \(scale.formatted(.number.precision(.fractionLength(2))))×",
+                        systemImage: showsConfirmation ? "checkmark.circle.fill" : "viewfinder"
                     )
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(showsConfirmation ? Color.green : Color.primary)
@@ -656,65 +1082,68 @@ private struct PreviewFocusOverlay: View {
                     Spacer()
                 }
             }
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        guard mapper.sourcePoint(for: value.location) != nil else { return }
-                        pendingLocation = value.location
-                        showsConfirmation = false
-                    }
-                    .onEnded { value in
-                        guard let point = mapper.sourcePoint(for: value.location) else {
-                            pendingLocation = nil
-                            return
-                        }
-                        model.setSelectedZoomFocus(point)
-                        if let selected = model.selectedZoom {
-                            model.seek(to: selected.focusTime)
-                        }
-                        withAnimation(.easeOut(duration: 0.16)) {
-                            pendingLocation = value.location
-                            showsConfirmation = true
-                        }
-                    }
-            )
+            .coordinateSpace(name: coordinateSpaceName)
         }
     }
 
-    private var focusReticle: some View {
-        ZStack {
-            Circle()
-                .stroke(.white, lineWidth: 2)
-                .frame(width: 26, height: 26)
-            Rectangle()
-                .fill(.white)
-                .frame(width: 1, height: 36)
-            Rectangle()
-                .fill(.white)
-                .frame(width: 36, height: 1)
-        }
-        .shadow(color: .black.opacity(0.8), radius: 2)
+    private func moveGesture(
+        mapper: PreviewViewboxMapper,
+        scale: Double
+    ) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .named(coordinateSpaceName))
+            .onChanged { value in
+                pendingFocus = mapper.focusPoint(
+                    moving: target.focusPoint,
+                    by: value.translation,
+                    scale: scale
+                )
+                showsConfirmation = false
+            }
+            .onEnded { _ in
+                commit(focusPoint: pendingFocus ?? target.focusPoint, scale: scale)
+            }
     }
 
-    private var pendingReticle: some View {
-        ZStack {
-            Circle()
-                .fill(Color.accentColor.opacity(0.25))
-                .frame(width: 34, height: 34)
-            Circle()
-                .stroke(.white, lineWidth: 2)
-                .frame(width: 20, height: 20)
-            Circle()
-                .fill(.white)
-                .frame(width: 5, height: 5)
+    private func resizeGesture(mapper: PreviewViewboxMapper) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .named(coordinateSpaceName))
+            .onChanged { value in
+                let scale = mapper.scale(
+                    resizingHandleTo: value.location,
+                    focusPoint: target.focusPoint,
+                    initialScale: target.scale,
+                    allowedRange: scaleRange
+                )
+                pendingScale = scale
+                pendingFocus = mapper.clampedFocusPoint(
+                    target.focusPoint,
+                    scale: scale
+                )
+                showsConfirmation = false
+            }
+            .onEnded { _ in
+                commit(
+                    focusPoint: pendingFocus ?? target.focusPoint,
+                    scale: pendingScale ?? target.scale
+                )
+            }
+    }
+
+    private func commit(focusPoint: CGPoint, scale: Double) {
+        model.setSelectedZoomViewbox(focusPoint: focusPoint, scale: scale)
+        if let selected = model.selectedViewboxTarget {
+            model.seek(to: selected.time)
         }
-        .shadow(color: .black.opacity(0.75), radius: 2)
+        pendingFocus = nil
+        pendingScale = nil
+        withAnimation(.easeOut(duration: 0.16)) {
+            showsConfirmation = true
+        }
     }
 
     private func timeLabel(_ seconds: Double) -> String {
         String(format: "%02d:%02d", Int(seconds) / 60, Int(seconds) % 60)
     }
+
 }
 
 private extension Color {

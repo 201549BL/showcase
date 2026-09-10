@@ -127,6 +127,84 @@ struct MotionTests {
         #expect(path.frame(at: 1.3)?.opacity == 0)
     }
 
+    @Test("An open hand closes while pressing and dragging")
+    func cursorAppearanceTracksPointerActions() {
+        let path = CursorPath(
+            events: [
+                LocalizedInputEvent(
+                    timestamp: 0,
+                    type: .mouseMoved,
+                    position: CGPoint(x: 100, y: 100),
+                    cursorStyle: .openHand
+                ),
+                LocalizedInputEvent(
+                    timestamp: 0.1,
+                    type: .leftMouseDown,
+                    position: CGPoint(x: 100, y: 100),
+                    cursorStyle: .openHand
+                ),
+                LocalizedInputEvent(
+                    timestamp: 0.2,
+                    type: .leftMouseDragged,
+                    position: CGPoint(x: 160, y: 100),
+                    cursorStyle: .openHand
+                ),
+                LocalizedInputEvent(
+                    timestamp: 0.3,
+                    type: .leftMouseUp,
+                    position: CGPoint(x: 160, y: 100),
+                    cursorStyle: .openHand
+                )
+            ],
+            smoothing: 0,
+            hideAfter: 2
+        )
+
+        #expect(path.frame(at: 0.05)?.cursorStyle == .openHand)
+        #expect(path.frame(at: 0.15)?.cursorStyle == .closedHand)
+        #expect(path.frame(at: 0.25)?.cursorStyle == .closedHand)
+        #expect(path.frame(at: 0.3)?.cursorStyle == .openHand)
+    }
+
+    @Test("Text selection preserves the I-beam cursor while dragging")
+    func textSelectionPreservesIBeamCursor() {
+        let path = CursorPath(
+            events: [
+                LocalizedInputEvent(
+                    timestamp: 0,
+                    type: .mouseMoved,
+                    position: CGPoint(x: 100, y: 100),
+                    cursorStyle: .iBeam
+                ),
+                LocalizedInputEvent(
+                    timestamp: 0.1,
+                    type: .leftMouseDown,
+                    position: CGPoint(x: 100, y: 100),
+                    cursorStyle: .iBeam
+                ),
+                LocalizedInputEvent(
+                    timestamp: 0.2,
+                    type: .leftMouseDragged,
+                    position: CGPoint(x: 160, y: 100),
+                    cursorStyle: .iBeam
+                ),
+                LocalizedInputEvent(
+                    timestamp: 0.3,
+                    type: .leftMouseUp,
+                    position: CGPoint(x: 160, y: 100),
+                    cursorStyle: .iBeam
+                )
+            ],
+            smoothing: 0,
+            hideAfter: 2
+        )
+
+        #expect(path.frame(at: 0.05)?.cursorStyle == .iBeam)
+        #expect(path.frame(at: 0.15)?.cursorStyle == .iBeam)
+        #expect(path.frame(at: 0.25)?.cursorStyle == .iBeam)
+        #expect(path.frame(at: 0.3)?.cursorStyle == .iBeam)
+    }
+
     @Test("Cursor does not drift toward a future event across an idle gap")
     func cursorHoldsPositionAcrossIdleGaps() {
         let path = CursorPath(
@@ -228,6 +306,100 @@ struct MotionTests {
         #expect(smoothedStep < 80)
     }
 
+    @Test("Camera look-ahead resolves a movement burst to its final interaction")
+    func cursorReframingDestinationUsesBurstEndpoint() {
+        let path = CursorPath(
+            events: [
+                localized(time: 0, type: .mouseMoved, x: 100, y: 100),
+                localized(time: 1, type: .mouseMoved, x: 100, y: 100),
+                localized(time: 1.05, type: .mouseMoved, x: 500, y: 200),
+                localized(time: 1.1, type: .leftMouseDown, x: 900, y: 300),
+                localized(time: 1.15, type: .mouseMoved, x: 1_200, y: 400)
+            ],
+            smoothing: 0.65,
+            hideAfter: 2
+        )
+
+        #expect(path.reframingTarget(at: 0.9) == nil)
+        #expect(path.reframingTarget(at: 1.01)?.position == CGPoint(x: 900, y: 300))
+        #expect(path.reframingTarget(at: 1.11)?.position == CGPoint(x: 1_200, y: 400))
+    }
+
+    @Test("Camera commits to the interaction destination, not cursor waypoints")
+    func cameraReframeIgnoresIntermediateCursorWaypoints() {
+        let sourceSize = CGSize(width: 1_600, height: 900)
+        let segment = ZoomSegment(
+            id: UUID(),
+            startTime: 0,
+            focusTime: 0.5,
+            endTime: 4,
+            focusPoint: CodablePoint(CGPoint(x: 800, y: 450)),
+            scale: 2,
+            source: .automatic
+        )
+        func path(waypoint: Double) -> CursorPath {
+            CursorPath(
+                events: [
+                    localized(time: 0, type: .mouseMoved, x: 800, y: 450),
+                    localized(time: 1, type: .mouseMoved, x: 800, y: 450),
+                    localized(time: 1.05, type: .mouseMoved, x: waypoint, y: 450),
+                    localized(time: 1.1, type: .leftMouseDown, x: 1_400, y: 450)
+                ],
+                smoothing: 0.65,
+                hideAfter: 2
+            )
+        }
+        let lowWaypoint = CameraEvaluator(
+            segments: [segment],
+            sourceSize: sourceSize,
+            duration: 4,
+            cursorPath: path(waypoint: 900)
+        )
+        let highWaypoint = CameraEvaluator(
+            segments: [segment],
+            sourceSize: sourceSize,
+            duration: 4,
+            cursorPath: path(waypoint: 1_150)
+        )
+
+        #expect(lowWaypoint.state(at: 1.08) == highWaypoint.state(at: 1.08))
+        #expect(lowWaypoint.state(at: 1.3).focusPoint.x > 850)
+    }
+
+    @Test("Camera positions once to contain the upcoming cursor path")
+    func cameraFramesUpcomingCursorPathAsOneComposition() {
+        let sourceSize = CGSize(width: 1_600, height: 900)
+        let segment = ZoomSegment(
+            id: UUID(),
+            startTime: 0,
+            focusTime: 0.5,
+            endTime: 4,
+            focusPoint: CodablePoint(CGPoint(x: 800, y: 450)),
+            scale: 2,
+            source: .automatic
+        )
+        let path = CursorPath(
+            events: [
+                localized(time: 0, type: .mouseMoved, x: 800, y: 450),
+                localized(time: 1, type: .mouseMoved, x: 1_100, y: 450),
+                localized(time: 1.05, type: .mouseMoved, x: 1_180, y: 450),
+                localized(time: 1.1, type: .leftMouseDown, x: 1_250, y: 450)
+            ],
+            smoothing: 0.65,
+            hideAfter: 2
+        )
+        let evaluator = CameraEvaluator(
+            segments: [segment],
+            sourceSize: sourceSize,
+            duration: 4,
+            cursorPath: path
+        )
+
+        let settledFocus = evaluator.state(at: 1.8).focusPoint.x
+        #expect(settledFocus > 940)
+        #expect(settledFocus < 990)
+    }
+
     @Test("Nearby clicks become one stable zoom")
     func mergesNearbyClicks() {
         let events = [
@@ -242,9 +414,9 @@ struct MotionTests {
             duration: 7
         )
 
-        #expect(segments.count == 2)
-        #expect(segments[0].startTime == 0.8)
-        #expect(segments[0].endTime == 3)
+        #expect(segments.count == 1)
+        #expect(segments[0].startTime == 0.78)
+        #expect(segments[0].endTime == 5.85)
     }
 
     @Test("Ignores the recording-stop click at the end of the timeline")
@@ -263,8 +435,8 @@ struct MotionTests {
         #expect(segments.count == 1)
     }
 
-    @Test("Rapid far-apart clicks become one stable overview shot")
-    func rapidClicksUseOverviewShot() {
+    @Test("Rapid far-apart clicks stay in one panning shot")
+    func rapidClicksStayInOneShot() {
         let events = [
             localized(time: 1, type: .leftMouseDown, x: 200, y: 200),
             localized(time: 1.7, type: .leftMouseDown, x: 1_400, y: 700),
@@ -279,15 +451,14 @@ struct MotionTests {
         )
 
         #expect(segments.count == 1)
-        #expect(segments[0].scale < 1.3)
-        #expect(segments[0].focusPoint.cgPoint == CGPoint(x: 800, y: 450))
+        #expect(segments[0].scale == 1.95)
     }
 
-    @Test("Calm groups more interactions with wider framing than Focused")
+    @Test("Both presets avoid a reset when there is no overview beat")
     func zoomBehaviorPresets() {
         let events = [
             localized(time: 1, type: .leftMouseDown, x: 300, y: 300),
-            localized(time: 2.8, type: .leftMouseDown, x: 1_300, y: 600)
+            localized(time: 2.3, type: .leftMouseDown, x: 500, y: 340)
         ]
         let sourceSize = CGSize(width: 1_600, height: 900)
 
@@ -303,9 +474,92 @@ struct MotionTests {
         )
 
         #expect(calm.count == 1)
-        #expect(focused.count == 2)
+        #expect(focused.count == 1)
         #expect(calm[0].scale < focused[0].scale)
         #expect(calm[0].transitionDuration == ZoomBehaviorSettings.calm.transitionDuration)
+    }
+
+    @Test("Smart uses a strong close-up for a tight interaction")
+    func tightInteractionsUseStrongCloseUp() throws {
+        let segment = try #require(
+            AutoZoomPlanner(settings: .calm).plan(
+                events: [
+                    localized(time: 1, type: .leftMouseDown, x: 760, y: 420),
+                    localized(time: 1.4, type: .leftMouseDown, x: 820, y: 470)
+                ],
+                sourceSize: CGSize(width: 1_600, height: 900),
+                duration: 4
+            ).first
+        )
+
+        #expect(abs(segment.scale - 1.95) < 0.001)
+    }
+
+    @Test("Camera motion style is independent from automatic framing preset")
+    func motionStyleSurvivesPresetChanges() {
+        var settings = ZoomBehaviorSettings.calm
+        settings.motionStyle = .smooth
+
+        let closeUp = settings.applying(.focused)
+
+        #expect(closeUp.preset == .focused)
+        #expect(closeUp.scale == ZoomBehaviorSettings.focused.scale)
+        #expect(closeUp.resolvedMotionStyle == .smooth)
+    }
+
+    @Test("Focused camera motion settles faster than Smooth")
+    func focusedMotionSettlesFaster() {
+        let segment = ZoomSegment(
+            id: UUID(),
+            startTime: 1,
+            focusTime: 1.6,
+            endTime: 4,
+            focusPoint: CodablePoint(CGPoint(x: 500, y: 300)),
+            scale: 2,
+            source: .automatic
+        )
+        let focused = CameraEvaluator(
+            segments: [segment],
+            sourceSize: CGSize(width: 1_600, height: 900),
+            motionStyle: .focused
+        )
+        let smooth = CameraEvaluator(
+            segments: [segment],
+            sourceSize: CGSize(width: 1_600, height: 900),
+            motionStyle: .smooth
+        )
+
+        #expect(focused.state(at: 1.25).scale > smooth.state(at: 1.25).scale)
+    }
+
+    @Test("Smart keeps spatially distinct actions in one shot during active work")
+    func spatiallyDistinctActionsStayInOneActiveShot() {
+        let segments = AutoZoomPlanner(settings: .calm).plan(
+            events: [
+                localized(time: 1, type: .leftMouseDown, x: 250, y: 250),
+                localized(time: 2.6, type: .leftMouseDown, x: 1_350, y: 650)
+            ],
+            sourceSize: CGSize(width: 1_600, height: 900),
+            duration: 6
+        )
+
+        #expect(segments.count == 1)
+        #expect(segments[0].scale == ZoomBehaviorSettings.calm.scale)
+    }
+
+    @Test("Smart creates a new shot after a readable overview interval")
+    func quietIntervalCreatesSeparateShots() {
+        let segments = AutoZoomPlanner(settings: .calm).plan(
+            events: [
+                localized(time: 1, type: .leftMouseDown, x: 250, y: 250),
+                localized(time: 6, type: .leftMouseDown, x: 1_350, y: 650)
+            ],
+            sourceSize: CGSize(width: 1_600, height: 900),
+            duration: 10
+        )
+
+        #expect(segments.count == 2)
+        #expect(segments[0].endTime + 1.2 < segments[1].startTime)
     }
 
     @Test("Per-segment transition controls the zoom-out timing")
@@ -337,8 +591,8 @@ struct MotionTests {
             duration: 3
         )
 
-        #expect(segments[0].focusPoint.x == 500)
-        #expect(segments[0].focusPoint.y == 281.25)
+        #expect(abs(segments[0].focusPoint.x - (800 / 1.95)) < 0.001)
+        #expect(abs(segments[0].focusPoint.y - (450 / 1.95)) < 0.001)
     }
 
     @Test("Camera returns to the source center outside zooms")
@@ -363,8 +617,8 @@ struct MotionTests {
         #expect(evaluator.state(at: 3.1).focusPoint.distance(to: CGPoint(x: 800, y: 450)) < 2)
     }
 
-    @Test("Camera stays zoomed while traveling between nearby interactions")
-    func cameraKeepsContextBetweenNearbyInteractions() {
+    @Test("Camera resets between separate timeline blocks")
+    func cameraResetsBetweenTimelineBlocks() {
         let segments = [
             ZoomSegment(
                 id: UUID(),
@@ -392,9 +646,8 @@ struct MotionTests {
 
         let travelingState = evaluator.state(at: 3.5)
 
-        #expect(travelingState.scale > 1.3)
-        #expect(travelingState.focusPoint.x > 500)
-        #expect(travelingState.focusPoint.x < 760)
+        #expect(travelingState.scale < 1.001)
+        #expect(travelingState.focusPoint.distance(to: CGPoint(x: 800, y: 450)) < 1)
     }
 
     @Test("Overlapping interaction shots become one continuous pan")
@@ -566,6 +819,41 @@ struct MotionTests {
 
         #expect(abs(inside.state(at: 3).focusPoint.x - 800) < 2)
         #expect(outside.state(at: 3).focusPoint.x > 950)
+    }
+
+    @Test("Each zoom can choose how far the cursor travels before panning")
+    func zoomSegmentsUseIndependentCursorBoundaries() {
+        let sourceSize = CGSize(width: 1_600, height: 900)
+        let cursor = cursorPath([
+            (0, 800, 450),
+            (1, 1_050, 450),
+            (4, 1_050, 450)
+        ])
+        func evaluator(boundary: Double) -> CameraEvaluator {
+            CameraEvaluator(
+                segments: [
+                    ZoomSegment(
+                        id: UUID(),
+                        startTime: 0,
+                        focusTime: 0.5,
+                        endTime: 5,
+                        focusPoint: CodablePoint(CGPoint(x: 800, y: 450)),
+                        scale: 2,
+                        source: .manual,
+                        cursorBoundaryFraction: boundary
+                    )
+                ],
+                sourceSize: sourceSize,
+                duration: 5,
+                cursorPath: cursor
+            )
+        }
+
+        let tighterBoundary = evaluator(boundary: 0.35).state(at: 3)
+        let widerBoundary = evaluator(boundary: 0.9).state(at: 3)
+
+        #expect(tighterBoundary.focusPoint.x > 875)
+        #expect(abs(widerBoundary.focusPoint.x - 800) < 2)
     }
 
     @Test("Small cursor tremor does not trigger a delayed camera micro-pan")
@@ -890,8 +1178,8 @@ struct MotionTests {
         #expect(maximumAdditionalDrift < 0.001)
     }
 
-    @Test("Connected automatic shots preserve pending cursor intent")
-    func connectedShotsDoNotResetCursorIntentGate() {
+    @Test("Overlapping automatic shots preserve pending cursor intent")
+    func overlappingShotsDoNotResetCursorIntentGate() {
         let sourceSize = CGSize(width: 1_600, height: 900)
         let segments = [
             ZoomSegment(
@@ -906,8 +1194,8 @@ struct MotionTests {
             ),
             ZoomSegment(
                 id: UUID(),
-                startTime: 4.5,
-                focusTime: 5,
+                startTime: 3.8,
+                focusTime: 4.3,
                 endTime: 7,
                 focusPoint: CodablePoint(CGPoint(x: 800, y: 450)),
                 scale: 1.75,
@@ -951,8 +1239,8 @@ struct MotionTests {
         #expect(maximumAdditionalDrift < 0.001)
     }
 
-    @Test("Hidden connected shot handoff refreshes cursor intent scale")
-    func hiddenConnectedShotRefreshesCursorIntentSlop() {
+    @Test("Overlapping shot handoff refreshes cursor intent scale")
+    func overlappingShotRefreshesCursorIntentSlop() {
         let sourceSize = CGSize(width: 1_600, height: 900)
         let segments = [
             ZoomSegment(
@@ -967,8 +1255,8 @@ struct MotionTests {
             ),
             ZoomSegment(
                 id: UUID(),
-                startTime: 4.5,
-                focusTime: 5,
+                startTime: 3.8,
+                focusTime: 4.3,
                 endTime: 7,
                 focusPoint: CodablePoint(CGPoint(x: 800, y: 450)),
                 scale: 1.75,
@@ -1281,7 +1569,7 @@ struct MotionTests {
             cursorPath: path
         )
 
-        #expect(abs((segment.focusTime - segment.startTime) - 0.9) < 0.001)
+        #expect(abs((segment.focusTime - segment.startTime) - 0.77) < 0.001)
         var poses: [NormalizedCameraPose] = []
         for time in stride(from: 1.1, through: 1.6, by: 1.0 / 60.0) {
             let cursor = try #require(path.frame(at: time)?.position)
@@ -1337,6 +1625,7 @@ struct MotionTests {
         let accelerations = zip(velocities, velocities.dropFirst()).map {
             abs($1 - $0) * 60
         }
+
 
         #expect((frameSteps.map(abs).max() ?? 0) < 30)
         #expect((accelerations.max() ?? 0) < 30_000)
@@ -1612,8 +1901,8 @@ struct MotionTests {
         #expect(followingRenderedReversals == plannedRenderedReversals)
     }
 
-    @Test("Manual camera focus ignores cursor following")
-    func manualZoomRemainsAuthoritative() {
+    @Test("Custom viewbox stays still in its safe area and reframes near the edge")
+    func customViewboxUsesEdgeTriggeredCursorReframing() {
         let sourceSize = CGSize(width: 1_600, height: 900)
         let segment = ZoomSegment(
             id: UUID(),
@@ -1625,7 +1914,9 @@ struct MotionTests {
             source: .manual
         )
         let path = cursorPath([
-            (0, 1_500, 450),
+            (0, 800, 450),
+            (1, 900, 450),
+            (2, 1_500, 450),
             (4, 1_500, 450)
         ])
         let evaluator = CameraEvaluator(
@@ -1635,7 +1926,55 @@ struct MotionTests {
             cursorPath: path
         )
 
-        #expect(abs(evaluator.state(at: 3).focusPoint.x - 800) < 2)
+        let insideSafeArea = evaluator.state(at: 1)
+        let reframed = evaluator.state(at: 3)
+        let visibleHalfWidth = sourceSize.width / (2 * reframed.scale)
+
+        #expect(abs(insideSafeArea.focusPoint.x - 800) < 2)
+        #expect(reframed.focusPoint.x > 900)
+        #expect(abs(1_500 - reframed.focusPoint.x) <= visibleHalfWidth + 0.001)
+    }
+
+    @Test("Cursor safety does not stall an authored viewbox move")
+    func customViewboxReachesAuthoredCompositionDuringZoomIn() {
+        let sourceSize = CGSize(width: 1_000, height: 600)
+        let segment = ZoomSegment(
+            id: UUID(),
+            startTime: 1,
+            focusTime: 1.77,
+            endTime: 4,
+            focusPoint: CodablePoint(CGPoint(x: 500, y: 154)),
+            scale: 1.95,
+            source: .manual,
+            transitionDuration: 0.55
+        )
+        let path = CursorPath(
+            events: [
+                localized(time: 0.9, type: .mouseMoved, x: 410, y: 135),
+                localized(time: 1.1, type: .mouseMoved, x: 370, y: 135),
+                localized(time: 2.05, type: .mouseMoved, x: 375, y: 130)
+            ],
+            smoothing: 0.65,
+            hideAfter: 2
+        )
+        let withCursor = CameraEvaluator(
+            segments: [segment],
+            sourceSize: sourceSize,
+            duration: 4,
+            cursorPath: path,
+            motionStyle: .smooth
+        )
+        let authoredOnly = CameraEvaluator(
+            segments: [segment],
+            sourceSize: sourceSize,
+            duration: 4,
+            motionStyle: .smooth
+        )
+
+        let actual = withCursor.state(at: 2.05)
+        let expected = authoredOnly.state(at: 2.05)
+
+        #expect(actual.focusPoint.distance(to: expected.focusPoint) < 5)
     }
 
     @Test("Spring camera never exposes pixels beyond the source")
@@ -1743,6 +2082,42 @@ struct MotionTests {
         )
 
         #expect(evaluator.state(at: 3.5).scale < 1.001)
+    }
+
+    @Test("Authored reframes move the camera without ending the zoom")
+    func authoredReframesMoveWithinOneZoom() {
+        let segment = ZoomSegment(
+            id: UUID(),
+            startTime: 0.5,
+            focusTime: 1,
+            endTime: 5,
+            focusPoint: CodablePoint(CGPoint(x: 250, y: 300)),
+            scale: 2,
+            source: .manual,
+            reframes: [
+                ZoomReframe(
+                    time: 2,
+                    focusPoint: CodablePoint(CGPoint(x: 750, y: 300)),
+                    scale: 2
+                )
+            ]
+        )
+        let evaluator = CameraEvaluator(
+            segments: [segment],
+            sourceSize: CGSize(width: 1_000, height: 600),
+            duration: 5
+        )
+
+        let before = evaluator.state(at: 1.9)
+        let moving = evaluator.state(at: 2.2)
+        let settled = evaluator.state(at: 3)
+
+        #expect(before.focusPoint.x < 275)
+        #expect(moving.focusPoint.x > before.focusPoint.x + 25)
+        #expect(settled.focusPoint.x > 725)
+        #expect(abs(before.scale - 2) < 0.01)
+        #expect(abs(moving.scale - 2) < 0.01)
+        #expect(abs(settled.scale - 2) < 0.01)
     }
 
     private func captureSource(width: Double, height: Double) -> CaptureSourceDescriptor {

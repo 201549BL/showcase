@@ -4,17 +4,27 @@ import Foundation
 struct CursorPath {
     private static let maximumInterpolationGap = 0.12
 
+    struct ReframingTarget: Equatable {
+        let burstStartTime: Double
+        let arrivalTime: Double
+        let position: CGPoint
+        let minimumPosition: CGPoint
+        let maximumPosition: CGPoint
+    }
+
     struct Keyframe: Equatable {
         let timestamp: Double
         let rawPosition: CGPoint
         let position: CGPoint
         let isClickAnchor: Bool
+        let cursorStyle: RecordedInputEvent.CursorStyle
     }
 
     struct Frame: Equatable {
         let position: CGPoint
         let rawPosition: CGPoint
         let opacity: Double
+        let cursorStyle: RecordedInputEvent.CursorStyle
     }
 
     let keyframes: [Keyframe]
@@ -32,7 +42,8 @@ struct CursorPath {
             return RawSample(
                 timestamp: event.timestamp,
                 position: position,
-                isClickAnchor: event.isPrimaryClick
+                isClickAnchor: event.isPrimaryClick,
+                cursorStyle: Self.cursorStyle(for: event)
             )
         }
 
@@ -49,7 +60,8 @@ struct CursorPath {
             return Frame(
                 position: keyframes[0].position,
                 rawPosition: keyframes[0].rawPosition,
-                opacity: 0
+                opacity: 0,
+                cursorStyle: keyframes[0].cursorStyle
             )
         }
 
@@ -93,7 +105,63 @@ struct CursorPath {
             opacity = max(0, 1 - ((idleTime - hideAfter) / fadeDuration))
         }
 
-        return Frame(position: position, rawPosition: rawPosition, opacity: opacity)
+        return Frame(
+            position: position,
+            rawPosition: rawPosition,
+            opacity: opacity,
+            cursorStyle: previous.cursorStyle
+        )
+    }
+
+    /// Returns the meaningful destination of the movement currently in progress.
+    ///
+    /// Rendering is offline, so the camera can frame the end of a continuous
+    /// cursor burst instead of chasing every intermediate sample. A click ends
+    /// the search because it is the interaction the viewer needs to see.
+    func reframingTarget(at time: Double) -> ReframingTarget? {
+        guard !keyframes.isEmpty else { return nil }
+
+        let upperIndex = keyframes.partitioningIndex { $0.timestamp > time }
+        guard upperIndex > 0, upperIndex < keyframes.count else { return nil }
+
+        let previous = keyframes[upperIndex - 1]
+        let next = keyframes[upperIndex]
+        guard next.timestamp - previous.timestamp <= Self.maximumInterpolationGap else { return nil }
+
+        var burstStartIndex = upperIndex - 1
+        while burstStartIndex > 0 {
+            let gap = keyframes[burstStartIndex].timestamp
+                - keyframes[burstStartIndex - 1].timestamp
+            guard gap <= Self.maximumInterpolationGap else { break }
+            burstStartIndex -= 1
+        }
+
+        var destination = next.rawPosition
+        var index = upperIndex
+        while !keyframes[index].isClickAnchor, index + 1 < keyframes.count {
+            let following = keyframes[index + 1]
+            guard following.timestamp - keyframes[index].timestamp <= Self.maximumInterpolationGap else {
+                break
+            }
+            destination = following.rawPosition
+            index += 1
+        }
+
+        var minimumPosition = keyframes[burstStartIndex].rawPosition
+        var maximumPosition = minimumPosition
+        for keyframe in keyframes[burstStartIndex...index] {
+            minimumPosition.x = min(minimumPosition.x, keyframe.rawPosition.x)
+            minimumPosition.y = min(minimumPosition.y, keyframe.rawPosition.y)
+            maximumPosition.x = max(maximumPosition.x, keyframe.rawPosition.x)
+            maximumPosition.y = max(maximumPosition.y, keyframe.rawPosition.y)
+        }
+        return ReframingTarget(
+            burstStartTime: keyframes[burstStartIndex].timestamp,
+            arrivalTime: keyframes[index].timestamp,
+            position: destination,
+            minimumPosition: minimumPosition,
+            maximumPosition: maximumPosition
+        )
     }
 
     private static func smooth(samples: [RawSample], amount: Double) -> [Keyframe] {
@@ -181,7 +249,8 @@ struct CursorPath {
                 position: sample.isClickAnchor || index == samples.startIndex
                     ? sample.position
                     : filtered,
-                isClickAnchor: sample.isClickAnchor
+                isClickAnchor: sample.isClickAnchor,
+                cursorStyle: sample.cursorStyle
             )
         }
     }
@@ -192,8 +261,20 @@ struct CursorPath {
                 timestamp: $0.timestamp,
                 rawPosition: $0.position,
                 position: $0.position,
-                isClickAnchor: $0.isClickAnchor
+                isClickAnchor: $0.isClickAnchor,
+                cursorStyle: $0.cursorStyle
             )
+        }
+    }
+
+    private static func cursorStyle(
+        for event: LocalizedInputEvent
+    ) -> RecordedInputEvent.CursorStyle {
+        switch event.type {
+        case .leftMouseDown, .leftMouseDragged, .rightMouseDragged:
+            return (event.cursorStyle ?? .arrow).draggingVariant
+        default:
+            return event.cursorStyle ?? .arrow
         }
     }
 
@@ -214,6 +295,7 @@ private struct RawSample {
     let timestamp: Double
     let position: CGPoint
     let isClickAnchor: Bool
+    let cursorStyle: RecordedInputEvent.CursorStyle
 }
 
 private extension Array {

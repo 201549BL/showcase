@@ -13,7 +13,12 @@ struct RecordingProject: Codable, Equatable {
     var cursor: CursorSettings
     var zoomSegments: [ZoomSegment]
     var zoomBehavior: ZoomBehaviorSettings?
+    var motionBlur: MotionBlurSettings?
+    var cameraOverlay: CameraOverlaySettings?
     var timeline: TimelineSettings?
+    var isAudioMuted: Bool?
+
+    var resolvedIsAudioMuted: Bool { isAudioMuted ?? false }
 
     init(
         id: UUID = UUID(),
@@ -23,6 +28,8 @@ struct RecordingProject: Codable, Equatable {
         cursor: CursorSettings = .default,
         zoomSegments: [ZoomSegment] = [],
         zoomBehavior: ZoomBehaviorSettings = .calm,
+        motionBlur: MotionBlurSettings = .default,
+        cameraOverlay: CameraOverlaySettings? = nil,
         timeline: TimelineSettings = .default
     ) {
         version = Self.currentVersion
@@ -33,11 +40,22 @@ struct RecordingProject: Codable, Equatable {
         self.cursor = cursor
         self.zoomSegments = zoomSegments
         self.zoomBehavior = zoomBehavior
+        self.motionBlur = motionBlur
+        self.cameraOverlay = cameraOverlay
         self.timeline = timeline
     }
 
     var resolvedZoomBehavior: ZoomBehaviorSettings {
-        zoomBehavior ?? .legacy
+        guard let zoomBehavior else { return .legacy }
+        return zoomBehavior.applying(zoomBehavior.preset)
+    }
+
+    var resolvedMotionBlur: MotionBlurSettings {
+        motionBlur ?? .disabled
+    }
+
+    var resolvedCameraOverlay: CameraOverlaySettings {
+        cameraOverlay ?? .default
     }
 }
 
@@ -51,6 +69,7 @@ struct RecordingMetadata: Codable, Equatable {
     var includesMicrophone: Bool?
     var videoRelativePath: String
     var eventsRelativePath: String
+    var cameraVideoRelativePath: String? = nil
 }
 
 struct CaptureSourceDescriptor: Codable, Equatable, Identifiable, Hashable {
@@ -112,6 +131,24 @@ struct CanvasSettings: Codable, Equatable {
         case landscape
         case square
         case vertical
+
+        var displayName: String {
+            switch self {
+            case .source: return "Original size"
+            case .landscape: return "Desktop (16:9)"
+            case .square: return "Square (1:1)"
+            case .vertical: return "Shorts (9:16)"
+            }
+        }
+
+        var filenameSuffix: String {
+            switch self {
+            case .source: return "original"
+            case .landscape: return "desktop"
+            case .square: return "square"
+            case .vertical: return "shorts"
+            }
+        }
     }
 
     var aspectRatio: AspectRatio
@@ -145,6 +182,46 @@ struct CursorSettings: Codable, Equatable {
     )
 }
 
+struct MotionBlurSettings: Codable, Equatable {
+    var amount: Double
+
+    static let `default` = MotionBlurSettings(amount: 0.5)
+    static let disabled = MotionBlurSettings(amount: 0)
+}
+
+struct CameraOverlaySettings: Codable, Equatable {
+    enum SizingMode: String, Codable, CaseIterable, Identifiable {
+        case adaptive
+        case fixed
+
+        var id: String { rawValue }
+        var displayName: String { rawValue.capitalized }
+    }
+
+    enum Corner: String, Codable, CaseIterable, Identifiable {
+        case topLeft
+        case topRight
+        case bottomLeft
+        case bottomRight
+
+        var id: String { rawValue }
+    }
+
+    var isVisible: Bool
+    var size: Double
+    var corner: Corner
+    var sizingMode: SizingMode?
+
+    var resolvedSizingMode: SizingMode { sizingMode ?? .fixed }
+
+    static let `default` = CameraOverlaySettings(
+        isVisible: true,
+        size: 0.22,
+        corner: .bottomRight,
+        sizingMode: .adaptive
+    )
+}
+
 struct TimelineSettings: Codable, Equatable {
     var trimStart: Double
     var trimEnd: Double?
@@ -153,6 +230,15 @@ struct TimelineSettings: Codable, Equatable {
 }
 
 struct ZoomBehaviorSettings: Codable, Equatable {
+    enum MotionStyle: String, Codable, CaseIterable, Identifiable {
+        case focused
+        case smooth
+
+        var id: String { rawValue }
+
+        var displayName: String { rawValue.capitalized }
+    }
+
     enum Preset: String, Codable, CaseIterable, Identifiable {
         case calm
         case focused
@@ -161,7 +247,14 @@ struct ZoomBehaviorSettings: Codable, Equatable {
 
         var id: String { rawValue }
 
-        var displayName: String { rawValue.capitalized }
+        var displayName: String {
+            switch self {
+            case .calm: return "Smart"
+            case .focused: return "Close-up"
+            case .off: return "Off"
+            case .custom: return "Custom"
+            }
+        }
     }
 
     var preset: Preset
@@ -170,23 +263,28 @@ struct ZoomBehaviorSettings: Codable, Equatable {
     var holdDuration: Double
     var groupingInterval: Double
     var overviewPaddingFraction: Double
+    var motionStyle: MotionStyle?
+
+    var resolvedMotionStyle: MotionStyle { motionStyle ?? .focused }
 
     static let calm = ZoomBehaviorSettings(
         preset: .calm,
-        scale: 1.4,
-        transitionDuration: 0.65,
-        holdDuration: 1.3,
-        groupingInterval: 2.4,
-        overviewPaddingFraction: 0.18
+        scale: 1.95,
+        transitionDuration: 0.55,
+        holdDuration: 2,
+        groupingInterval: 2.8,
+        overviewPaddingFraction: 0.14,
+        motionStyle: .focused
     )
 
     static let focused = ZoomBehaviorSettings(
         preset: .focused,
-        scale: 1.75,
+        scale: 2.5,
         transitionDuration: 0.35,
         holdDuration: 0.75,
-        groupingInterval: 1.2,
-        overviewPaddingFraction: 0.1
+        groupingInterval: 1.05,
+        overviewPaddingFraction: 0.09,
+        motionStyle: .focused
     )
 
     static let legacy = ZoomBehaviorSettings(
@@ -195,15 +293,21 @@ struct ZoomBehaviorSettings: Codable, Equatable {
         transitionDuration: 0.4,
         holdDuration: 0.9,
         groupingInterval: 1.6,
-        overviewPaddingFraction: 0.12
+        overviewPaddingFraction: 0.12,
+        motionStyle: .focused
     )
 
     func applying(_ preset: Preset) -> ZoomBehaviorSettings {
+        let motionStyle = resolvedMotionStyle
         switch preset {
         case .calm:
-            return .calm
+            var settings = Self.calm
+            settings.motionStyle = motionStyle
+            return settings
         case .focused:
-            return .focused
+            var settings = Self.focused
+            settings.motionStyle = motionStyle
+            return settings
         case .off:
             var settings = self
             settings.preset = .off
@@ -217,6 +321,9 @@ struct ZoomBehaviorSettings: Codable, Equatable {
 }
 
 struct ZoomSegment: Codable, Equatable, Identifiable {
+    static let defaultCursorBoundaryFraction = 0.65
+    static let cursorBoundaryRange = 0.35...0.9
+
     enum Source: String, Codable {
         case automatic
         case manual
@@ -230,6 +337,8 @@ struct ZoomSegment: Codable, Equatable, Identifiable {
     var scale: Double
     var source: Source
     var transitionDuration: Double?
+    var reframes: [ZoomReframe]
+    var cursorBoundaryFraction: Double?
 
     init(
         id: UUID,
@@ -239,7 +348,9 @@ struct ZoomSegment: Codable, Equatable, Identifiable {
         focusPoint: CodablePoint,
         scale: Double,
         source: Source,
-        transitionDuration: Double? = nil
+        transitionDuration: Double? = nil,
+        reframes: [ZoomReframe] = [],
+        cursorBoundaryFraction: Double? = nil
     ) {
         self.id = id
         self.startTime = startTime
@@ -249,5 +360,88 @@ struct ZoomSegment: Codable, Equatable, Identifiable {
         self.scale = scale
         self.source = source
         self.transitionDuration = transitionDuration
+        self.reframes = reframes
+        self.cursorBoundaryFraction = cursorBoundaryFraction
+    }
+
+    var resolvedCursorBoundaryFraction: Double {
+        min(
+            Self.cursorBoundaryRange.upperBound,
+            max(
+                Self.cursorBoundaryRange.lowerBound,
+                cursorBoundaryFraction ?? Self.defaultCursorBoundaryFraction
+            )
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case startTime
+        case focusTime
+        case endTime
+        case focusPoint
+        case scale
+        case source
+        case transitionDuration
+        case reframes
+        case cursorBoundaryFraction
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        startTime = try container.decode(Double.self, forKey: .startTime)
+        focusTime = try container.decode(Double.self, forKey: .focusTime)
+        endTime = try container.decode(Double.self, forKey: .endTime)
+        focusPoint = try container.decode(CodablePoint.self, forKey: .focusPoint)
+        scale = try container.decode(Double.self, forKey: .scale)
+        source = try container.decode(Source.self, forKey: .source)
+        transitionDuration = try container.decodeIfPresent(
+            Double.self,
+            forKey: .transitionDuration
+        )
+        reframes = try container.decodeIfPresent(
+            [ZoomReframe].self,
+            forKey: .reframes
+        ) ?? []
+        cursorBoundaryFraction = try container.decodeIfPresent(
+            Double.self,
+            forKey: .cursorBoundaryFraction
+        )
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(startTime, forKey: .startTime)
+        try container.encode(focusTime, forKey: .focusTime)
+        try container.encode(endTime, forKey: .endTime)
+        try container.encode(focusPoint, forKey: .focusPoint)
+        try container.encode(scale, forKey: .scale)
+        try container.encode(source, forKey: .source)
+        try container.encodeIfPresent(transitionDuration, forKey: .transitionDuration)
+        if !reframes.isEmpty {
+            try container.encode(reframes, forKey: .reframes)
+        }
+        try container.encodeIfPresent(cursorBoundaryFraction, forKey: .cursorBoundaryFraction)
+    }
+}
+
+struct ZoomReframe: Codable, Equatable, Identifiable {
+    let id: UUID
+    var time: Double
+    var focusPoint: CodablePoint
+    var scale: Double
+
+    init(
+        id: UUID = UUID(),
+        time: Double,
+        focusPoint: CodablePoint,
+        scale: Double
+    ) {
+        self.id = id
+        self.time = time
+        self.focusPoint = focusPoint
+        self.scale = scale
     }
 }

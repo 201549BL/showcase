@@ -16,7 +16,8 @@ The usable V1 includes:
 - Visual click/zoom timeline with seeking, moving, and edge resizing
 - Direct focus editing by clicking or dragging on the video preview
 - Undo and redo for timeline, focus, zoom, trim, canvas, and cursor edits
-- Calm, Focused, Off, and Custom automatic zoom behavior
+- Smart, Close-up, and Off automatic zoom behavior with optional advanced framing controls
+- Independent Focused and Smooth camera-motion styles
 - Spring-smoothed camera tracking with a cursor travel zone and distance-aware reframing
 - Landscape, square, vertical, and source-aspect exports
 - Beginning/end trimming and 1080p or 4K MP4 export
@@ -51,7 +52,7 @@ Open a `.screenproject` and use the timeline below the preview to edit the camer
 - Choose **Set Focus**, then click or drag to a point in the preview to center the selected zoom there.
 - **Add Zoom Here** creates a manual zoom at the playhead; **Regenerate** rebuilds automatic zooms from recorded clicks.
 - Use **Command-Z** to undo and **Shift-Command-Z** to redo. Slider drags and timeline drags each count as one edit.
-- Choose **Calm** for fewer, wider zooms; **Focused** for tighter, quicker moves; or **Off** to keep only manual zooms. **Custom** exposes intensity, transition, hold, and click-grouping controls.
+- Choose **Smart** for adaptive interaction framing, **Close-up** for tighter shots, or **Off** to keep only manual zooms. Pick **Focused** camera motion for fast settling or **Smooth** for more fluid movement. Fine-grained timing and grouping controls live under Advanced.
 
 ## Project layout
 

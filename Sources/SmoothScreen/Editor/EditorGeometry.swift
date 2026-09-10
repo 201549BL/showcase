@@ -108,3 +108,96 @@ struct PreviewFocusMapper: Equatable {
         )
     }
 }
+
+struct PreviewViewboxMapper: Equatable {
+    let viewSize: CGSize
+    let canvasSize: CGSize
+    let screenRect: CGRect
+    let sourceSize: CGSize
+
+    var displayedCanvasRect: CGRect {
+        guard
+            viewSize.width > 0,
+            viewSize.height > 0,
+            canvasSize.width > 0,
+            canvasSize.height > 0
+        else { return .zero }
+
+        let scale = min(viewSize.width / canvasSize.width, viewSize.height / canvasSize.height)
+        let size = CGSize(width: canvasSize.width * scale, height: canvasSize.height * scale)
+        return CGRect(
+            x: (viewSize.width - size.width) / 2,
+            y: (viewSize.height - size.height) / 2,
+            width: size.width,
+            height: size.height
+        )
+    }
+
+    var displayedScreenRect: CGRect {
+        let canvasRect = displayedCanvasRect
+        guard canvasSize.width > 0 else { return .zero }
+        let scale = canvasRect.width / canvasSize.width
+        return CGRect(
+            x: canvasRect.minX + screenRect.minX * scale,
+            y: canvasRect.minY + (canvasSize.height - screenRect.maxY) * scale,
+            width: screenRect.width * scale,
+            height: screenRect.height * scale
+        )
+    }
+
+    func viewboxRect(focusPoint: CGPoint, scale: Double) -> CGRect {
+        let screen = displayedScreenRect
+        guard sourceSize.width > 0, sourceSize.height > 0 else { return .zero }
+        let zoom = max(1, scale)
+        let sourceWidth = sourceSize.width / zoom
+        let sourceHeight = sourceSize.height / zoom
+        let clampedFocus = clampedFocusPoint(focusPoint, scale: zoom)
+        return CGRect(
+            x: screen.minX + (clampedFocus.x - sourceWidth / 2) / sourceSize.width * screen.width,
+            y: screen.minY + (clampedFocus.y - sourceHeight / 2) / sourceSize.height * screen.height,
+            width: screen.width / zoom,
+            height: screen.height / zoom
+        )
+    }
+
+    func focusPoint(
+        moving focusPoint: CGPoint,
+        by translation: CGSize,
+        scale: Double
+    ) -> CGPoint {
+        let screen = displayedScreenRect
+        guard screen.width > 0, screen.height > 0 else { return focusPoint }
+        let proposed = CGPoint(
+            x: focusPoint.x + translation.width / screen.width * sourceSize.width,
+            y: focusPoint.y + translation.height / screen.height * sourceSize.height
+        )
+        return clampedFocusPoint(proposed, scale: scale)
+    }
+
+    func scale(
+        resizingHandleTo location: CGPoint,
+        focusPoint: CGPoint,
+        initialScale: Double,
+        allowedRange: ClosedRange<Double>
+    ) -> Double {
+        let initialRect = viewboxRect(focusPoint: focusPoint, scale: initialScale)
+        guard initialRect.width > 0, initialRect.height > 0 else { return initialScale }
+        let horizontalRatio = abs(location.x - initialRect.midX) / (initialRect.width / 2)
+        let verticalRatio = abs(location.y - initialRect.midY) / (initialRect.height / 2)
+        let sizeRatio = max(0.05, (horizontalRatio + verticalRatio) / 2)
+        return min(
+            allowedRange.upperBound,
+            max(allowedRange.lowerBound, initialScale / sizeRatio)
+        )
+    }
+
+    func clampedFocusPoint(_ point: CGPoint, scale: Double) -> CGPoint {
+        let zoom = max(1, scale)
+        let halfWidth = sourceSize.width / (2 * zoom)
+        let halfHeight = sourceSize.height / (2 * zoom)
+        return CGPoint(
+            x: min(sourceSize.width - halfWidth, max(halfWidth, point.x)),
+            y: min(sourceSize.height - halfHeight, max(halfHeight, point.y))
+        )
+    }
+}

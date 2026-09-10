@@ -5,6 +5,7 @@ struct LocalizedInputEvent: Equatable {
     let timestamp: Double
     let type: RecordedInputEvent.EventType
     let position: CGPoint?
+    var cursorStyle: RecordedInputEvent.CursorStyle? = nil
 
     var isPrimaryClick: Bool { type == .leftMouseDown }
 
@@ -48,7 +49,8 @@ struct InputEventLocalizer {
             return LocalizedInputEvent(
                 timestamp: event.timestamp,
                 type: event.type,
-                position: localPosition
+                position: localPosition,
+                cursorStyle: event.cursorStyle
             )
         }
     }

@@ -7,6 +7,7 @@ final class AppModel: ObservableObject {
     @Published var selectedSourceID: String?
     @Published var includesSystemAudio = true
     @Published var includesMicrophone = false
+    @Published var includesCamera = false
     @Published private(set) var hasInputMonitoringPermission: Bool
     @Published private(set) var hasScreenRecordingPermission: Bool
     @Published private(set) var isLoadingSources = false
@@ -104,7 +105,8 @@ final class AppModel: ObservableObject {
             activeProjectURL = try await coordinator.start(
                 source: selectedSource.descriptor,
                 includesSystemAudio: includesSystemAudio,
-                includesMicrophone: includesMicrophone
+                includesMicrophone: includesMicrophone,
+                includesCamera: includesCamera
             )
             isRecording = true
             elapsedTime = 0
