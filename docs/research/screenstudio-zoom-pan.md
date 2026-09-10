@@ -12,7 +12,7 @@ Screen Studio's published design is best understood as an **event-generated, edi
 - Ordinary zoom ranges have an entrance, a hold/follow phase, and an exit back to the base framing. An instant option removes the transition. A separate `Always keep zoomed in` mode changes the base framing and continuously follows the cursor, especially for vertical output.
 - Screen Studio does **not** publish its click-grouping threshold, lead/lag timing, follow dead zone, easing/spring constants, edge-clamping math, or any content-aware zoom-strength heuristic.
 
-The strongest lesson for SmoothScreen is architectural: make a zoom range a complete camera shot with explicit base framing before and after it; keep targeting separate from animation; and make cursor following bounded and stateful rather than recentering on every sample.
+The strongest lesson for Showcase is architectural: make a zoom range a complete camera shot with explicit base framing before and after it; keep targeting separate from animation; and make cursor following bounded and stateful rather than recentering on every sample.
 
 ## Focused answer: frequency, grouping, and avoiding zoom churn
 
@@ -39,7 +39,7 @@ The first-party material points to several cooperating mechanisms:
 5. **High-level motion styles:** `Focused` settles quickly; `Smooth` is more fluid. Screen Studio removed older “glide” options from the UI in 2024, suggesting a deliberate move away from low-level tuning toward opinionated styles. [Animations guide](https://screen.studio/guide/animations), [Screen Studio changelog](https://screen.studio/changelog)
 6. **Explicit persistent mode:** `Always keep zoomed in` is used when repeated returns to overview would be undesirable, especially in narrow aspect ratios. It is not an accidental carry-over from a previous range. [Aspect Ratio guide](https://screen.studio/guide/aspect-ratio)
 
-### Product conclusion for SmoothScreen
+### Product conclusion for Showcase
 
 Do not model auto zoom as “click → zoom effect.” Model it as **click activity → camera shot proposal**:
 
@@ -50,7 +50,7 @@ Do not model auto zoom as “click → zoom effect.” Model it as **click activ
 - Suppress a proposed shot when there is not enough time for a readable enter/hold/exit lifecycle.
 - Expose a small number of intent presets; keep merge windows, springs, and hysteresis internal unless the user selects an advanced/custom mode.
 
-That last list is a recommendation for SmoothScreen, not a claim about Screen Studio's unpublished constants.
+That last list is a recommendation for Showcase, not a claim about Screen Studio's unpublished constants.
 
 ## Findings by behavior
 
@@ -96,7 +96,7 @@ That last list is a recommendation for SmoothScreen, not a claim about Screen St
 **Observed/inferred from first-party media**
 
 - In the editing demo, automatic blocks initially read `2x Auto`; changing one range makes it `3.1x Auto`, while the editor exposes `Set as default` and `Apply to all zooms`. This strongly suggests magnification is principally a per-range/default parameter, not an automatically chosen value derived from target size. [Adding & Editing Zooms guide](https://screen.studio/guide/adding-editing-zooms), [embedded editing demo video](https://cdn.sanity.io/files/2ltoq22u/production/3115f12a592970fd873ffe30a5a9e693a37de66f.mp4)
-- Nothing in the first-party material demonstrates a tighter click target automatically receiving more magnification than a broad interaction region. Adaptive scale would therefore be an opportunity for SmoothScreen to exceed Screen Studio's documented behavior, not something required for parity.
+- Nothing in the first-party material demonstrates a tighter click target automatically receiving more magnification than a broad interaction region. Adaptive scale would therefore be an opportunity for Showcase to exceed Screen Studio's documented behavior, not something required for parity.
 
 ### 4. Panning and cursor follow
 
@@ -158,7 +158,7 @@ The evidence points to a layered render pipeline:
 
 The exact renderer math and data model are proprietary and not published.
 
-## Practical implications for SmoothScreen
+## Practical implications for Showcase
 
 The Screen Studio pattern worth copying is not a large collection of exposed timing knobs. It is a small set of stable concepts:
 
@@ -168,7 +168,7 @@ The Screen Studio pattern worth copying is not a large collection of exposed tim
 4. **Following should preserve visibility, not continuously center.** Use an inner safe area, edge clamping, hysteresis, and velocity limits so small cursor motions do not create camera motion.
 5. **Base crop is its own mode.** Persistent vertical/aspect-ratio tracking should be explicit, not an accidental failure to zoom out.
 6. **Offer style, not mechanics.** A couple of intent-level motion styles (`Focused`, `Smooth`) are more understandable than exposing raw spring and timing parameters.
-7. **Potential differentiation:** choose magnification from target geometry and interaction density. Screen Studio's public UI appears to use a fixed/default per-range scale; SmoothScreen can make small, coherent targets tighter and broad/scattered actions wider, while still allowing override.
+7. **Potential differentiation:** choose magnification from target geometry and interaction density. Screen Studio's public UI appears to use a fixed/default per-range scale; Showcase can make small, coherent targets tighter and broad/scattered actions wider, while still allowing override.
 
 ## Unknowns that should not be reverse-engineered into requirements
 
@@ -180,4 +180,4 @@ The Screen Studio pattern worth copying is not a large collection of exposed tim
 - Edge padding, target bias, and aspect-ratio transformation math.
 - Any use of window hierarchy, accessibility metadata, OCR, or other semantic UI understanding.
 
-These should be designed and tested against SmoothScreen's own product goals rather than copied from unsupported assumptions.
+These should be designed and tested against Showcase's own product goals rather than copied from unsupported assumptions.

@@ -1,70 +1,68 @@
-# SmoothScreen
+# Showcase
 
-SmoothScreen is a local, macOS-only screen recorder for creating polished product demos. It records the screen separately from mouse input so cursor smoothing and camera movement can be applied non-destructively after recording.
+A native Mac screen recorder for polished product demos. Record your screen, cursor, microphone, and face camera, then adjust the framing and motion in a live editor. Recording and editing stay on your Mac.
 
-## Current milestone
+## Install
 
-The usable V1 includes:
+Download `Showcase-0.1.0-universal.zip` from [GitHub Releases](https://github.com/201549BL/Showcase/releases), unzip it, and drag **Showcase.app** into **Applications**.
 
-- Display and window discovery through ScreenCaptureKit
-- Cursor-free screen recording with system audio and optional microphone audio
-- Timestamped mouse, click, scroll, and keyboard metadata
-- A recoverable `.screenproject` directory format
-- Smoothed, high-resolution synthetic cursor rendering
-- Automatic click-driven zoom generation and manual zooms
-- Live composed preview with background, framing, cursor, and zoom controls
-- Visual click/zoom timeline with seeking, moving, and edge resizing
-- Direct focus editing by clicking or dragging on the video preview
-- Undo and redo for timeline, focus, zoom, trim, canvas, and cursor edits
-- Smart, Close-up, and Off automatic zoom behavior with optional advanced framing controls
-- Independent Focused and Smooth camera-motion styles
-- Spring-smoothed camera tracking with a cursor travel zone and distance-aware reframing
-- Landscape, square, vertical, and source-aspect exports
-- Beginning/end trimming and 1080p or 4K MP4 export
+- macOS 14 or newer; Apple silicon and Intel Macs.
+- Microphone capture requires macOS 15 or newer.
+- Native Liquid Glass on macOS 26, with translucent materials on earlier versions.
+- Allow **Screen Recording** and **Input Monitoring** when prompted. Camera and microphone permissions are requested when you enable those inputs.
 
-## Requirements
+Restart Showcase after granting Screen Recording access if macOS asks you to. Release downloads are Developer ID signed and notarized; you should not need to disable Gatekeeper.
 
-- macOS 14 or newer
-- Xcode 16 or newer
-- Screen Recording permission
-- Input Monitoring permission for global mouse and keyboard metadata
+## Record
 
-## Run during development
+Choose a screen or window in the floating bar. Use the microphone, system audio, and camera buttons to configure your inputs. Press **Record** for a cancellable three-second countdown.
 
-Build a signed local app bundle and open it:
+While recording, the floating bar shows elapsed time and a red **Stop recording** button. You can also stop from the recording item in the macOS menu bar. Stopping opens the editor. Showcase's own windows are excluded from full-display captures.
+
+## Edit and export
+
+- Adjust the background, padding, corners, and aspect ratio in **Frame**. New recordings reuse your last background, including desktop images.
+- Change cursor size, smoothing, and click animation in **Cursor**.
+- Generate screen zooms from recorded clicks, or add one at the playhead using **Add effect**.
+- Move timeline sections by dragging their bodies; resize them with the edge handles.
+- Drag the playhead to scrub. Use the orange trim rail to shorten the recording.
+- Use camera visibility sections to choose when your face appears. Camera effects change its size temporarily; touching effects blend directly into one another.
+- During screen zooms, generated camera effects make the face camera smaller. Their size, timing, and transition remain editable.
+- Undo with **⌘Z** and redo with **⇧⌘Z**.
+- Toggle recorded audio in its timeline band; the setting applies to preview and export.
+- Choose Desktop (16:9), Square (1:1), Shorts (9:16), or original size in Export, in 1080p or 4K. Format-specific filenames keep multiple versions separate.
+
+New recordings are saved in `~/Movies/Showcase` as recoverable `.screenproject` folders. Keep the entire folder together: it contains screen/camera media, input-event metadata, and edits. Use **Open recording…** in the source popover to reopen a project. Recordings previously saved in `~/Movies/SmoothScreen` continue to work.
+
+## Privacy
+
+Showcase saves screen recordings, optional camera/audio recordings, and timestamped cursor, click, scroll, and keyboard-event metadata locally. Keyboard metadata includes key codes and modifier flags. Treat a project folder as sensitive recording data when sharing it. Showcase has no account service, analytics, or upload feature; exporting writes a local video file.
+
+## Build from source
+
+Install Xcode 26 or newer and select its command-line tools, then run:
 
 ```bash
-./scripts/build-app.sh
-open .build/SmoothScreen.app
+swift test
+./scripts/build-app.sh debug
+open .build/Showcase.app
 ```
 
-The first capture prompts for macOS permissions. Restart the application after granting Screen Recording permission if macOS requests it.
+Local builds use an available Apple Development certificate, or ad hoc signing when none is available. `SHOWCASE_SIGNING_IDENTITY` overrides the signing identity. Set `SHOWCASE_PROJECT` to a `.screenproject` path to open it at launch. The previous `SMOOTHSCREEN_` variable names remain supported for these two settings.
 
-For command-line development you can also use `swift run SmoothScreen`, but the app-bundle workflow provides a stable bundle identifier for macOS privacy permissions.
+The bundle identifier remains `com.eirikbjorndal.SmoothScreen` so the rename preserves the app's existing identity.
 
-## Editing a recording
+See [the release guide](docs/RELEASING.md) for universal builds, Developer ID signing, notarization, and publishing.
 
-Open a `.screenproject` and use the timeline below the preview to edit the camera:
-
-- Click the empty timeline to seek.
-- Click a zoom block to select it, drag its body to move it, or drag either white edge to resize it.
-- Orange marks show recorded clicks.
-- Choose **Set Focus**, then click or drag to a point in the preview to center the selected zoom there.
-- **Add Zoom Here** creates a manual zoom at the playhead; **Regenerate** rebuilds automatic zooms from recorded clicks.
-- Use **Command-Z** to undo and **Shift-Command-Z** to redo. Slider drags and timeline drags each count as one edit.
-- Choose **Smart** for adaptive interaction framing, **Close-up** for tighter shots, or **Off** to keep only manual zooms. Pick **Focused** camera motion for fast settling or **Smooth** for more fluid movement. Fine-grained timing and grouping controls live under Advanced.
-
-## Project layout
+## Source layout
 
 ```text
-Sources/SmoothScreen/
+Sources/Showcase/
 ├── App/       Application state and entry point
-├── Capture/   ScreenCaptureKit and input event capture
-├── Editor/    Project editing state
+├── Capture/   ScreenCaptureKit, camera, and input-event capture
+├── Editor/    Editing state and undo history
 ├── Motion/    Cursor smoothing and camera planning
 ├── Project/   Project models and persistence
-├── Rendering/ Core Image preview and export composition
-└── UI/        SwiftUI screens
+├── Rendering/ Core Image preview and export
+└── UI/        SwiftUI recorder and editor
 ```
-
-Projects are saved under `~/Movies/SmoothScreen`. All processing stays on the Mac.
