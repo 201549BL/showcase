@@ -69,7 +69,7 @@ final class FrameCompositor {
         )
         cursorPath = builtCursorPath
         motionBlurAmount = min(1, max(0, project.resolvedMotionBlur.amount))
-        let builtCursorArtworks = Self.makeCursorArtworks()
+        let builtCursorArtworks = Self.makeCursorArtworks(settings: project.cursor)
         cursorArtworks = builtCursorArtworks
         let cursorCanvasScale = max(
             0,
@@ -536,192 +536,54 @@ final class FrameCompositor {
         return filter.outputImage ?? CIImage(color: color).cropped(to: rect)
     }
 
-    private static func makeCursorArtworks() -> [RecordedInputEvent.CursorStyle: CursorArtwork] {
-        let fallback = makeArrowArtwork()
-        var artworks: [RecordedInputEvent.CursorStyle: CursorArtwork] = [
-            .arrow: fallback,
-            .pointingHand: makePointingHandArtwork() ?? fallback
+    private static func makeCursorArtworks(settings: CursorSettings) -> [RecordedInputEvent.CursorStyle: CursorArtwork] {
+        // Bibata hotspots are measured from the top-left of its 256 × 256 SVGs.
+        let definitions: [(RecordedInputEvent.CursorStyle, String, CGFloat, CGFloat)] = [
+            (.arrow, "left_ptr", 55, 17),
+            (.pointingHand, "hand2", 114, 18),
+            (.iBeam, "xterm", 128, 128),
+            (.openHand, "hand1", 144, 79),
+            (.closedHand, "grabbing", 128, 66),
+            (.crosshair, "crosshair", 128, 128),
+            (.resizeHorizontal, "sb_h_double_arrow", 128, 128),
+            (.resizeVertical, "sb_v_double_arrow", 128, 128),
+            (.operationNotAllowed, "circle", 55, 17),
+            (.dragCopy, "copy", 55, 17),
+            (.dragLink, "link", 55, 17)
         ]
-        let systemCursors: [(RecordedInputEvent.CursorStyle, NSCursor)] = [
-            (.iBeam, .iBeam),
-            (.openHand, .openHand),
-            (.closedHand, .closedHand),
-            (.crosshair, .crosshair),
-            (.resizeHorizontal, .resizeLeftRight),
-            (.resizeVertical, .resizeUpDown),
-            (.operationNotAllowed, .operationNotAllowed),
-            (.dragCopy, .dragCopy),
-            (.dragLink, .dragLink)
-        ]
-        for (style, cursor) in systemCursors {
-            artworks[style] = systemArtwork(for: cursor) ?? fallback
-        }
-        return artworks
-    }
-
-    private static func systemArtwork(for cursor: NSCursor) -> CursorArtwork? {
-        let highestResolutionRepresentation = cursor.image.representations
-            .compactMap { $0 as? NSBitmapImageRep }
-            .filter { $0.cgImage != nil }
-            .max { lhs, rhs in
-                lhs.pixelsWide * lhs.pixelsHigh < rhs.pixelsWide * rhs.pixelsHigh
+        let resources = Bundle.main.resourceURL?
+            .appendingPathComponent("Showcase_Showcase.bundle")
+        let bundle = resources.flatMap { Bundle(url: $0) } ?? Bundle.module
+        return Dictionary(uniqueKeysWithValues: definitions.map { style, name, x, y in
+            guard let url = bundle.url(
+                forResource: name, withExtension: "png", subdirectory: "Bibata"
+            ), let image = CIImage(contentsOf: url) else {
+                preconditionFailure("Missing bundled Bibata cursor: \(name)")
             }
-        guard
-            cursor.image.size.width > 0,
-            cursor.image.size.height > 0,
-            let image = highestResolutionRepresentation?.cgImage
-        else { return nil }
-
-        return CursorArtwork(
-            image: CIImage(cgImage: image),
-            hotSpot: cursor.hotSpot,
-            nativeSize: cursor.image.size,
-            // System cursor images use compact UI dimensions. Recorded-video
-            // cursors need the same emphasized scale as the original artwork.
-            presentationScale: 2
-        )
+            let size: CGFloat = 48
+            return (style, CursorArtwork(
+                image: recolorCursor(image, settings: settings),
+                hotSpot: CGPoint(x: x * size / 256, y: y * size / 256),
+                nativeSize: CGSize(width: size, height: size),
+                presentationScale: 1
+            ))
+        })
     }
 
-    private static func makeArrowArtwork() -> CursorArtwork {
-        let nativeSize = CGSize(width: 32, height: 48)
-        let image = makeCustomCursorImage(nativeSize: nativeSize) { context in
-            let path = CGMutablePath()
-            path.move(to: CGPoint(x: 2.5, y: 45.5))
-            path.addLine(to: CGPoint(x: 2.5, y: 10))
-            path.addLine(to: CGPoint(x: 12, y: 19))
-            path.addLine(to: CGPoint(x: 18.5, y: 4))
-            path.addLine(to: CGPoint(x: 25, y: 7))
-            path.addLine(to: CGPoint(x: 18.5, y: 22))
-            path.addLine(to: CGPoint(x: 30.5, y: 22))
-            path.closeSubpath()
-            drawCursorPath(path, in: context)
-        }
-        return CursorArtwork(
-            image: image ?? CIImage.empty(),
-            hotSpot: CGPoint(x: 2.5, y: 2.5),
-            nativeSize: nativeSize,
-            presentationScale: 1
-        )
+    private static func recolorCursor(_ image: CIImage, settings: CursorSettings) -> CIImage {
+        let fill = CIColor(hex: settings.resolvedFillHex)
+        let outline = CIColor(hex: settings.resolvedOutlineHex)
+        // Ice artwork is grayscale: black is outline, white is fill. Mapping
+        // that ramp preserves antialiased edges and the original alpha channel.
+        return image.applyingFilter("CIColorMatrix", parameters: [
+            "inputRVector": CIVector(x: fill.red - outline.red, y: 0, z: 0, w: 0),
+            "inputGVector": CIVector(x: fill.green - outline.green, y: 0, z: 0, w: 0),
+            "inputBVector": CIVector(x: fill.blue - outline.blue, y: 0, z: 0, w: 0),
+            "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+            "inputBiasVector": CIVector(x: outline.red, y: outline.green, z: outline.blue, w: 0)
+        ])
     }
 
-    private static func makePointingHandArtwork() -> CursorArtwork? {
-        let nativeSize = CGSize(width: 38, height: 48)
-        guard let image = makeCustomCursorImage(nativeSize: nativeSize, draw: { context in
-            let path = CGMutablePath()
-            path.move(to: CGPoint(x: 14, y: 46))
-            path.addCurve(
-                to: CGPoint(x: 10, y: 42),
-                control1: CGPoint(x: 11.8, y: 46),
-                control2: CGPoint(x: 10, y: 44.2)
-            )
-            path.addLine(to: CGPoint(x: 10, y: 25))
-            path.addLine(to: CGPoint(x: 8, y: 27.2))
-            path.addCurve(
-                to: CGPoint(x: 2, y: 27.5),
-                control1: CGPoint(x: 6.3, y: 29.1),
-                control2: CGPoint(x: 3.6, y: 29.3)
-            )
-            path.addCurve(
-                to: CGPoint(x: 1.5, y: 21.8),
-                control1: CGPoint(x: 0.4, y: 25.7),
-                control2: CGPoint(x: 0.2, y: 23.3)
-            )
-            path.addLine(to: CGPoint(x: 11.5, y: 10.5))
-            path.addCurve(
-                to: CGPoint(x: 24, y: 4.5),
-                control1: CGPoint(x: 14.7, y: 6.8),
-                control2: CGPoint(x: 19.2, y: 4.5)
-            )
-            path.addCurve(
-                to: CGPoint(x: 36, y: 16.7),
-                control1: CGPoint(x: 30.7, y: 4.5),
-                control2: CGPoint(x: 36, y: 10)
-            )
-            path.addLine(to: CGPoint(x: 36, y: 27))
-            path.addCurve(
-                to: CGPoint(x: 32, y: 31),
-                control1: CGPoint(x: 36, y: 29.2),
-                control2: CGPoint(x: 34.2, y: 31)
-            )
-            path.addCurve(
-                to: CGPoint(x: 28, y: 27),
-                control1: CGPoint(x: 29.8, y: 31),
-                control2: CGPoint(x: 28, y: 29.2)
-            )
-            path.addLine(to: CGPoint(x: 28, y: 31))
-            path.addCurve(
-                to: CGPoint(x: 24, y: 35),
-                control1: CGPoint(x: 28, y: 33.2),
-                control2: CGPoint(x: 26.2, y: 35)
-            )
-            path.addCurve(
-                to: CGPoint(x: 20, y: 31),
-                control1: CGPoint(x: 21.8, y: 35),
-                control2: CGPoint(x: 20, y: 33.2)
-            )
-            path.addLine(to: CGPoint(x: 20, y: 34))
-            path.addCurve(
-                to: CGPoint(x: 18, y: 37.5),
-                control1: CGPoint(x: 20, y: 35.5),
-                control2: CGPoint(x: 19.2, y: 36.8)
-            )
-            path.addLine(to: CGPoint(x: 18, y: 42))
-            path.addCurve(
-                to: CGPoint(x: 14, y: 46),
-                control1: CGPoint(x: 18, y: 44.2),
-                control2: CGPoint(x: 16.2, y: 46)
-            )
-            path.closeSubpath()
-            drawCursorPath(path, in: context)
-        }) else { return nil }
-
-        return CursorArtwork(
-            image: image,
-            hotSpot: CGPoint(x: 14, y: 2),
-            nativeSize: nativeSize,
-            presentationScale: 1
-        )
-    }
-
-    private static func makeCustomCursorImage(
-        nativeSize: CGSize,
-        draw: (CGContext) -> Void
-    ) -> CIImage? {
-        let rasterScale = 16
-        let width = Int(nativeSize.width) * rasterScale
-        let height = Int(nativeSize.height) * rasterScale
-        guard
-            let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
-            let context = CGContext(
-                data: nil,
-                width: width,
-                height: height,
-                bitsPerComponent: 8,
-                bytesPerRow: width * 4,
-                space: colorSpace,
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-            )
-        else { return nil }
-
-        context.setAllowsAntialiasing(true)
-        context.setShouldAntialias(true)
-        context.setLineJoin(.round)
-        context.setLineCap(.round)
-        context.scaleBy(x: Double(rasterScale), y: Double(rasterScale))
-        draw(context)
-        guard let image = context.makeImage() else { return nil }
-        return CIImage(cgImage: image)
-    }
-
-    private static func drawCursorPath(_ path: CGPath, in context: CGContext) {
-        context.addPath(path)
-        context.setFillColor(CGColor(gray: 1, alpha: 1))
-        context.fillPath()
-        context.addPath(path)
-        context.setStrokeColor(CGColor(gray: 0.05, alpha: 1))
-        context.setLineWidth(2.5)
-        context.strokePath()
-    }
 }
 
 private struct CursorArtwork {

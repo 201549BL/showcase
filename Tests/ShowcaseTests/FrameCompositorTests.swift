@@ -9,8 +9,8 @@ import Testing
 
 @Suite("Frame compositor")
 struct FrameCompositorTests {
-    @Test("Composites visible cursor pixels over a source frame")
-    func compositesVisibleCursorPixels() throws {
+    @Test("Composites every Bibata cursor over a source frame", arguments: RecordedInputEvent.CursorStyle.allCases)
+    func compositesVisibleCursorPixels(style: RecordedInputEvent.CursorStyle) throws {
         var project = fixtureProject()
         project.canvas.aspectRatio = .source
         project.canvas.padding = 0
@@ -18,7 +18,7 @@ struct FrameCompositorTests {
         project.canvas.shadowRadius = 0
         project.cursor.hideAfter = 10
 
-        let cursorEvent = RecordedInputEvent(
+        var cursorEvent = RecordedInputEvent(
             timestamp: 0,
             type: .mouseMoved,
             position: CodablePoint(CGPoint(x: 160, y: 90)),
@@ -28,6 +28,7 @@ struct FrameCompositorTests {
             keyCode: nil,
             flags: 0
         )
+        cursorEvent.cursorStyle = style
         let source = CIImage(
             color: CIColor(red: 0.08, green: 0.42, blue: 0.73, alpha: 1)
         ).cropped(to: CGRect(x: 0, y: 0, width: 320, height: 180))
@@ -53,6 +54,42 @@ struct FrameCompositorTests {
         }
 
         #expect(changedPixelCount >= 20)
+    }
+
+    @Test("Cursor colors change fill and outline without tinting the recording")
+    func customCursorColors() throws {
+        var project = fixtureProject()
+        project.canvas.aspectRatio = .source
+        project.canvas.padding = 0
+        project.canvas.cornerRadius = 0
+        project.canvas.shadowRadius = 0
+        project.cursor.hideAfter = 10
+        project.cursor.showsClickAnimation = false
+        project.cursor.scale = 2.5
+        project.cursor.fillHex = "#FF0000"
+        project.cursor.outlineHex = "#00FF00"
+        let source = CIImage(color: CIColor(red: 0, green: 0, blue: 1))
+            .cropped(to: CGRect(x: 0, y: 0, width: 320, height: 180))
+        let rendered = FrameCompositor(project: project,
+                                       events: [cursorEvent(x: 160, y: 90)], quality: .hd)
+            .render(sourceImage: source, at: CMTime(seconds: 0.5, preferredTimescale: 600))
+        let pixels = rgbaPixels(in: rendered)
+        let indices = stride(from: 0, to: pixels.count, by: 4)
+        #expect(indices.contains { pixels[$0] > 230 && pixels[$0 + 1] < 20 && pixels[$0 + 2] < 20 })
+        #expect(indices.contains { pixels[$0] < 70 && pixels[$0 + 1] > 230 && pixels[$0 + 2] < 70 })
+        #expect(pixels[0] == 0 && pixels[1] == 0 && pixels[2] == 255)
+    }
+
+    @Test("Legacy cursor settings keep Ice colors and custom colors round-trip")
+    func cursorColorPersistence() throws {
+        let legacy = Data(#"{"scale":1.4,"smoothing":0.65,"hideAfter":2,"showsClickAnimation":true}"#.utf8)
+        var settings = try JSONDecoder().decode(CursorSettings.self, from: legacy)
+        #expect(settings.resolvedFillHex == "#FFFFFF")
+        #expect(settings.resolvedOutlineHex == "#000000")
+        settings.fillHex = "#FF8300"
+        settings.outlineHex = "#FFFFFF"
+        let restored = try JSONDecoder().decode(CursorSettings.self, from: JSONEncoder().encode(settings))
+        #expect(restored == settings)
     }
 
     @Test("Renders the cursor appearance recorded for the hovered action")
@@ -438,7 +475,7 @@ struct FrameCompositorTests {
         let camera = compositor.cameraState(at: 1)
         let geometry = CanvasGeometry(project: project, quality: .hd)
         let cursorCanvasScale = project.cursor.scale * geometry.canvasSize.height / 1_080
-        let cursorBottomFraction = (48 - 2) * cursorCanvasScale
+        let cursorBottomFraction = (48 - 17.0 * 48 / 256) * cursorCanvasScale
             / (geometry.screenRect.height / 2)
         let visibleHalfHeight = Double(project.recording.height) / (2 * camera.scale)
         let allowedDownwardDelta = visibleHalfHeight * (1 - cursorBottomFraction)
@@ -450,7 +487,7 @@ struct FrameCompositorTests {
         var project = fixtureProject()
         project.canvas.aspectRatio = .vertical
         project.canvas.padding = 160
-        project.cursor.scale = 2.5
+        project.cursor.scale = 2
         project.cursor.smoothing = 0
         project.cursor.hideAfter = 10
         project.zoomSegments = [
@@ -473,8 +510,8 @@ struct FrameCompositorTests {
         let camera = compositor.cameraState(at: 1)
         let geometry = CanvasGeometry(project: project, quality: .hd)
         let cursorCanvasScale = project.cursor.scale * geometry.canvasSize.height / 1_080
-        let topInset = 2 * cursorCanvasScale / (geometry.screenRect.height / 2)
-        let bottomInset = (48 - 2) * cursorCanvasScale / (geometry.screenRect.height / 2)
+        let topInset = 24 * cursorCanvasScale / (geometry.screenRect.height / 2)
+        let bottomInset = (48 - 17.0 * 48 / 256) * cursorCanvasScale / (geometry.screenRect.height / 2)
         let visibleHalfHeight = Double(project.recording.height) / (2 * camera.scale)
         let allowedRange: ClosedRange<Double> = (
             -visibleHalfHeight * (1 - topInset)

@@ -32,6 +32,8 @@ swift build "${build_args[@]}"
 build_dir="$(swift build "${build_args[@]}" --show-bin-path)"
 mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
 cp "$build_dir/Showcase" "$app_dir/Contents/MacOS/Showcase"
+# Include cursor artwork and its source/license in the packaged app.
+ditto "$build_dir/Showcase_Showcase.bundle" "$app_dir/Contents/Resources/Showcase_Showcase.bundle"
 cp Resources/Info.plist "$app_dir/Contents/Info.plist"
 cp Resources/AppIcon.icns "$app_dir/Contents/Resources/AppIcon.icns"
 

@@ -179,6 +179,11 @@ struct CursorSettings: Codable, Equatable {
     var smoothing: Double
     var hideAfter: Double
     var showsClickAnimation: Bool
+    var fillHex: String? = nil
+    var outlineHex: String? = nil
+
+    var resolvedFillHex: String { fillHex ?? "#FFFFFF" }
+    var resolvedOutlineHex: String { outlineHex ?? "#000000" }
 
     static let `default` = CursorSettings(
         scale: 1.4,

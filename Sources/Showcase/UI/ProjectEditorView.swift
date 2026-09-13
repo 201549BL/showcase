@@ -494,6 +494,16 @@ struct ProjectEditorView: View {
 
     private var cursorSection: some View {
         VStack(alignment: .leading, spacing: 22) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Bibata colors").font(.callout.weight(.semibold))
+                HStack {
+                    cursorPreset("Ice", fill: "#FFFFFF", outline: "#000000")
+                    cursorPreset("Classic", fill: "#000000", outline: "#FFFFFF")
+                    cursorPreset("Amber", fill: "#FF8300", outline: "#FFFFFF")
+                }
+                ColorPicker("Fill", selection: cursorColorBinding(outline: false), supportsOpacity: false)
+                ColorPicker("Outline", selection: cursorColorBinding(outline: true), supportsOpacity: false)
+            }
             slider("Size", value: binding(\.cursor.scale, actionName: "Change Cursor Size"),
                    range: 0.75...2.5, actionName: "Change Cursor Size", unit: .percent)
             slider("Smoothing", value: binding(\.cursor.smoothing, actionName: "Change Cursor Smoothing"),
@@ -503,6 +513,35 @@ struct ProjectEditorView: View {
             slider("Hide after inactivity", value: binding(\.cursor.hideAfter, actionName: "Change Cursor Visibility"),
                    range: 0.5...5, actionName: "Change Cursor Visibility", unit: .seconds)
         }
+    }
+
+    private func cursorPreset(_ title: String, fill: String, outline: String) -> some View {
+        Button(title) {
+            model.editProject(actionName: "Change Cursor Colors") {
+                $0.cursor.fillHex = fill
+                $0.cursor.outlineHex = outline
+            }
+        }
+        .buttonStyle(.bordered)
+    }
+
+    private func cursorColorBinding(outline: Bool) -> Binding<Color> {
+        Binding(
+            get: {
+                Color(hex: outline ? model.project.cursor.resolvedOutlineHex : model.project.cursor.resolvedFillHex)
+            },
+            set: { color in
+                guard let rgb = NSColor(color).usingColorSpace(.sRGB) else { return }
+                let hex = String(format: "#%02X%02X%02X",
+                                 Int((min(1, max(0, rgb.redComponent)) * 255).rounded()),
+                                 Int((min(1, max(0, rgb.greenComponent)) * 255).rounded()),
+                                 Int((min(1, max(0, rgb.blueComponent)) * 255).rounded()))
+                model.editProject(actionName: outline ? "Change Cursor Outline" : "Change Cursor Fill") {
+                    if outline { $0.cursor.outlineHex = hex }
+                    else { $0.cursor.fillHex = hex }
+                }
+            }
+        )
     }
 
     private var zoomSection: some View {
