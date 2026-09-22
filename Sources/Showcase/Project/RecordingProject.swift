@@ -175,6 +175,15 @@ struct CanvasSettings: Codable, Equatable {
 }
 
 struct CursorSettings: Codable, Equatable {
+    enum Theme: String, Codable, CaseIterable, Identifiable {
+        case bibata
+        case capitaine
+        var id: String { rawValue }
+        var displayName: String { rawValue.capitalized }
+    }
+    var theme: Theme? = nil
+    var resolvedTheme: Theme { theme ?? .bibata }
+
     var scale: Double
     var smoothing: Double
     var hideAfter: Double

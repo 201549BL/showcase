@@ -42,16 +42,27 @@ private struct AppGlassButton: ViewModifier {
     }
 }
 
-/// Floating controls need an edge against both bright windows and dark desktops.
+/// Keep the recorder dark over any desktop with a shadow-free frosted surface.
 struct RecorderGlassSurface: ViewModifier {
-    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    private let smoke = Color(red: 31 / 255, green: 33 / 255, blue: 40 / 255)
 
     func body(content: Content) -> some View {
-        content
-            .appGlassSurface(in: Capsule(), tint: colorScheme == .dark
-                ? .white.opacity(0.06) : .black.opacity(0.06))
-            .overlay(Capsule().strokeBorder(.black.opacity(0.22), lineWidth: 1))
-            .overlay(Capsule().inset(by: 1).strokeBorder(.white.opacity(0.45), lineWidth: 1))
-            .shadow(color: .black.opacity(0.25), radius: 8, x: 0, y: 3)
+        surface(content)
+            .foregroundStyle(Color(red: 250 / 255, green: 250 / 255, blue: 253 / 255))
+            .environment(\.colorScheme, .dark)
+    }
+
+    @ViewBuilder
+    private func surface(_ content: Content) -> some View {
+        if reduceTransparency {
+            content.background(smoke, in: Capsule())
+        } else {
+            // Material keeps the frosted surface without Liquid Glass's
+            // built-in active-state edge shadow.
+            content
+                .background(smoke.opacity(0.78), in: Capsule())
+                .background(.ultraThinMaterial, in: Capsule())
+        }
     }
 }

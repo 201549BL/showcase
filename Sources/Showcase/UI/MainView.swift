@@ -140,14 +140,16 @@ private struct RecordingSetupView: View {
                     Text(model.isStartingOrStopping ? "Wait…" : "Record").font(.system(size: 13, weight: .medium))
                 }.frame(width: 89, height: 42)
                     .foregroundStyle(.white)
-                    .background(LinearGradient(colors: [Color(red: 0.96, green: 0.38, blue: 0.40), Color(red: 0.87, green: 0.20, blue: 0.27)], startPoint: .top, endPoint: .bottom), in: Capsule())
-                    .overlay(Capsule().strokeBorder(.white.opacity(0.25), lineWidth: 1))
+                    .background(Color(red: 201 / 255, green: 62 / 255, blue: 71 / 255), in: Capsule())
                     .opacity(model.canStartRecording ? 1 : 0.5)
             }
             .buttonStyle(.plain).disabled(!model.canStartRecording).keyboardShortcut(.defaultAction)
             Button { dismissWindow() } label: {
-                Image(systemName: "xmark").font(.system(size: 11)).foregroundStyle(.secondary)
-                    .frame(width: 24, height: 42)
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Color(red: 163 / 255, green: 167 / 255, blue: 176 / 255))
+                    .frame(width: 28, height: 44, alignment: .center)
+                    .contentShape(Circle())
             }.buttonStyle(.plain).help("Close recorder").accessibilityLabel("Close recorder")
         }
         .disabled(isBusy)

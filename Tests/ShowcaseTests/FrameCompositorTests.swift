@@ -9,9 +9,10 @@ import Testing
 
 @Suite("Frame compositor")
 struct FrameCompositorTests {
-    @Test("Composites every Bibata cursor over a source frame", arguments: RecordedInputEvent.CursorStyle.allCases)
-    func compositesVisibleCursorPixels(style: RecordedInputEvent.CursorStyle) throws {
+    @Test("Composites every cursor theme and shape", arguments: RecordedInputEvent.CursorStyle.allCases, CursorSettings.Theme.allCases)
+    func compositesVisibleCursorPixels(style: RecordedInputEvent.CursorStyle, theme: CursorSettings.Theme) throws {
         var project = fixtureProject()
+        project.cursor.theme = theme
         project.canvas.aspectRatio = .source
         project.canvas.padding = 0
         project.canvas.cornerRadius = 0
@@ -56,10 +57,11 @@ struct FrameCompositorTests {
         #expect(changedPixelCount >= 20)
     }
 
-    @Test("Cursor colors change fill and outline without tinting the recording")
-    func customCursorColors() throws {
+    @Test("Cursor colors change fill and outline without tinting the recording", arguments: CursorSettings.Theme.allCases)
+    func customCursorColors(theme: CursorSettings.Theme) throws {
         var project = fixtureProject()
-        project.canvas.aspectRatio = .source
+        project.cursor.theme = theme
+        project.canvas.aspectRatio = .landscape
         project.canvas.padding = 0
         project.canvas.cornerRadius = 0
         project.canvas.shadowRadius = 0
@@ -78,14 +80,28 @@ struct FrameCompositorTests {
         #expect(indices.contains { pixels[$0] > 230 && pixels[$0 + 1] < 20 && pixels[$0 + 2] < 20 })
         #expect(indices.contains { pixels[$0] < 70 && pixels[$0 + 1] > 230 && pixels[$0 + 2] < 70 })
         #expect(pixels[0] == 0 && pixels[1] == 0 && pixels[2] == 255)
+
+        if theme == .capitaine {
+            project.cursor.outlineHex = "#FF00FF"
+            var copyEvent = cursorEvent(x: 160, y: 90)
+            copyEvent.cursorStyle = .dragCopy
+            let copy = FrameCompositor(project: project, events: [copyEvent], quality: .hd)
+                .render(sourceImage: source, at: CMTime(seconds: 0.5, preferredTimescale: 600))
+            let copyPixels = rgbaPixels(in: copy)
+            #expect(stride(from: 0, to: copyPixels.count, by: 4).contains {
+                copyPixels[$0] < 80 && copyPixels[$0 + 1] > 180 && copyPixels[$0 + 2] < 80
+            })
+        }
     }
 
     @Test("Legacy cursor settings keep Ice colors and custom colors round-trip")
     func cursorColorPersistence() throws {
         let legacy = Data(#"{"scale":1.4,"smoothing":0.65,"hideAfter":2,"showsClickAnimation":true}"#.utf8)
         var settings = try JSONDecoder().decode(CursorSettings.self, from: legacy)
+        #expect(settings.resolvedTheme == .bibata)
         #expect(settings.resolvedFillHex == "#FFFFFF")
         #expect(settings.resolvedOutlineHex == "#000000")
+        settings.theme = .capitaine
         settings.fillHex = "#FF8300"
         settings.outlineHex = "#FFFFFF"
         let restored = try JSONDecoder().decode(CursorSettings.self, from: JSONEncoder().encode(settings))

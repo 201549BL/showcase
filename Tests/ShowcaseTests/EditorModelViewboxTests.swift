@@ -8,6 +8,40 @@ import Testing
 
 @Suite("Editor viewbox interaction")
 struct EditorModelViewboxTests {
+    @Test("Cursor edits persist to projects and future recordings, including undo and redo")
+    @MainActor
+    func remembersCursorEdits() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "ShowcaseTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let preferences = CursorPreferences(defaults: defaults)
+        var previous = CursorSettings.default
+        previous.fillHex = "#123456"
+        preferences.remember(previous)
+        let model = try await makeFixture(in: root, cursorPreferences: preferences)
+        // Opening an older project or editing its frame must not replace the last cursor choice.
+        #expect(model.project.cursor == .default)
+        model.editProject(actionName: "Change Padding", rebuildPreview: false) { $0.canvas.padding = 20 }
+        #expect(preferences.settingsForNewRecording == previous)
+        model.editProject(actionName: "Change Cursor", rebuildPreview: false) {
+            $0.cursor.theme = .capitaine
+            $0.cursor.fillHex = "#FF8300"
+            $0.cursor.outlineHex = "#663399"
+        }
+        let custom = model.project.cursor
+        #expect(preferences.settingsForNewRecording == custom)
+        let reopened = try EditorModel(projectURL: model.projectURL, cursorPreferences: preferences)
+        #expect(reopened.project.cursor == custom)
+        model.undo()
+        #expect(preferences.settingsForNewRecording == .default)
+        model.redo()
+        #expect(preferences.settingsForNewRecording == custom)
+    }
+
     @Test("Deleting a timeline selection saves the change and supports undo and redo")
     @MainActor
     func deleteTimelineSelection() async throws {
@@ -516,7 +550,7 @@ struct EditorModelViewboxTests {
     }
 
     @MainActor
-    private func makeFixture(in temporaryRoot: URL, duration: Double = 1, withCamera: Bool = false) async throws -> EditorModel {
+    private func makeFixture(in temporaryRoot: URL, duration: Double = 1, withCamera: Bool = false, cursorPreferences: CursorPreferences = CursorPreferences()) async throws -> EditorModel {
         let store = ProjectStore(projectsDirectory: temporaryRoot)
         let locations = try store.createProjectDirectory(named: "Viewbox Fixture")
         try await createFixtureVideo(at: locations.videoURL, duration: duration)
@@ -561,7 +595,7 @@ struct EditorModelViewboxTests {
         try store.save(project, to: locations)
         try store.save(events: [], to: locations)
 
-        return try EditorModel(projectURL: locations.projectURL, projectStore: store)
+        return try EditorModel(projectURL: locations.projectURL, projectStore: store, cursorPreferences: cursorPreferences)
     }
 
     private func createFixtureVideo(at url: URL, duration: Double) async throws {

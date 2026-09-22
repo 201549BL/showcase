@@ -538,7 +538,7 @@ final class FrameCompositor {
 
     private static func makeCursorArtworks(settings: CursorSettings) -> [RecordedInputEvent.CursorStyle: CursorArtwork] {
         // Bibata hotspots are measured from the top-left of its 256 × 256 SVGs.
-        let definitions: [(RecordedInputEvent.CursorStyle, String, CGFloat, CGFloat)] = [
+        var definitions: [(RecordedInputEvent.CursorStyle, String, CGFloat, CGFloat)] = [
             (.arrow, "left_ptr", 55, 17),
             (.pointingHand, "hand2", 114, 18),
             (.iBeam, "xterm", 128, 128),
@@ -551,23 +551,71 @@ final class FrameCompositor {
             (.dragCopy, "copy", 55, 17),
             (.dragLink, "link", 55, 17)
         ]
+        let isCapitaine = settings.resolvedTheme == .capitaine
+        if isCapitaine {
+            // Capitaine's upstream specs use a 24 × 24 canvas.
+            definitions = [
+                (.arrow, "default", 4, 2),
+                (.pointingHand, "pointer", 12, 6),
+                (.iBeam, "text", 12, 12),
+                (.openHand, "openhand", 12, 12),
+                (.closedHand, "dnd-move", 12, 12),
+                (.crosshair, "crosshair", 12, 12),
+                (.resizeHorizontal, "size_hor", 12, 12),
+                (.resizeVertical, "size_ver", 12, 12),
+                (.operationNotAllowed, "not-allowed", 12, 12),
+                (.dragCopy, "copy", 4, 2),
+                (.dragLink, "alias", 4, 2)
+            ]
+        }
+        let sourceSize: CGFloat = isCapitaine ? 24 : 256
+        let colorCube = isCapitaine ? capitaineColorCube(settings: settings) : nil
         let resources = Bundle.main.resourceURL?
             .appendingPathComponent("Showcase_Showcase.bundle")
         let bundle = resources.flatMap { Bundle(url: $0) } ?? Bundle.module
         return Dictionary(uniqueKeysWithValues: definitions.map { style, name, x, y in
             guard let url = bundle.url(
-                forResource: name, withExtension: "png", subdirectory: "Bibata"
+                forResource: name, withExtension: "png", subdirectory: settings.resolvedTheme.displayName
             ), let image = CIImage(contentsOf: url) else {
-                preconditionFailure("Missing bundled Bibata cursor: \(name)")
+                preconditionFailure("Missing bundled cursor: \(name)")
             }
             let size: CGFloat = 48
             return (style, CursorArtwork(
-                image: recolorCursor(image, settings: settings),
-                hotSpot: CGPoint(x: x * size / 256, y: y * size / 256),
+                image: colorCube.map { image.applyingFilter("CIColorCube", parameters: [
+                    "inputCubeDimension": 32, "inputCubeData": $0
+                ]) } ?? recolorCursor(image, settings: settings),
+                hotSpot: CGPoint(x: x * size / sourceSize, y: y * size / sourceSize),
                 nativeSize: CGSize(width: size, height: size),
                 presentationScale: 1
             ))
         })
+    }
+
+    private static func capitaineColorCube(settings: CursorSettings) -> Data {
+        let fill = CIColor(hex: settings.resolvedFillHex)
+        let outline = CIColor(hex: settings.resolvedOutlineHex)
+        var values = [Float]()
+        values.reserveCapacity(32 * 32 * 32 * 4)
+        for blue in 0..<32 {
+            for green in 0..<32 {
+                for red in 0..<32 {
+                    let r = Float(red) / 31, g = Float(green) / 31, b = Float(blue) / 31
+                    // Recolor the neutral body, retaining colored action badges.
+                    let chroma = max(r, g, b) - min(r, g, b)
+                    let weight = max(0, 1 - chroma / 0.1)
+                    let gray = (r + g + b) / 3
+                    let channels: [(Float, CGFloat, CGFloat)] = [
+                        (r, fill.red, outline.red), (g, fill.green, outline.green), (b, fill.blue, outline.blue)
+                    ]
+                    for (original, foreground, border) in channels {
+                        let mapped = Float(border) + gray * Float(foreground - border)
+                        values.append(original * (1 - weight) + mapped * weight)
+                    }
+                    values.append(1)
+                }
+            }
+        }
+        return values.withUnsafeBufferPointer { Data(buffer: $0) }
     }
 
     private static func recolorCursor(_ image: CIImage, settings: CursorSettings) -> CIImage {

@@ -14,7 +14,7 @@ let package = Package(
         .executableTarget(
             name: "Showcase",
             path: "Sources/Showcase",
-            resources: [.copy("Resources/Bibata")],
+            resources: [.copy("Resources/Bibata"), .copy("Resources/Capitaine")],
             linkerSettings: [
                 .linkedFramework("AVKit")
             ]

@@ -47,10 +47,17 @@ struct RecordingWindowBridge: NSViewRepresentable {
                 window.titlebarAppearsTransparent = next != .editor
                 window.isOpaque = next == .editor
                 window.backgroundColor = next == .editor ? .windowBackgroundColor : .clear
-                window.hasShadow = true
+                window.hasShadow = next == .editor
                 window.isMovableByWindowBackground = next != .editor
                 window.level = next == .editor ? .normal : .floating
-                window.collectionBehavior = next == .recording ? [.canJoinAllSpaces, .fullScreenAuxiliary] : [.fullScreenAuxiliary]
+                switch next {
+                case .recording:
+                    window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+                case .editor:
+                    window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+                case .setup:
+                    window.collectionBehavior = [.fullScreenAuxiliary]
+                }
                 // ScreenCaptureKit excludes this process from display captures.
                 // Keep the setup/editor window available to normal screenshots.
                 window.sharingType = .readOnly
@@ -87,6 +94,12 @@ struct RecordingWindowBridge: NSViewRepresentable {
                     window.standardWindowButton(button)?.isHidden = next != .editor
                 }
                 mode = next
+                if next == .editor {
+                    // Present only on the transition, so subsequent editor updates don't steal focus.
+                    if window.isMiniaturized { window.deminiaturize(nil) }
+                    NSApp.activate(ignoringOtherApps: true)
+                    window.makeKeyAndOrderFront(nil)
+                }
             }
             if next == .editor { window.toolbar?.isVisible = true }
             // Prevent closing the only stop control while capture is starting or active.
@@ -184,13 +197,11 @@ struct RecordingDragHandle: NSViewRepresentable {
         }
 
         override func draw(_ dirtyRect: NSRect) {
-            NSColor.labelColor.withAlphaComponent(0.08).setFill()
-            NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 4), xRadius: 9, yRadius: 9).fill()
-            NSColor.secondaryLabelColor.setFill()
+            NSColor(srgbRed: 163 / 255, green: 167 / 255, blue: 176 / 255, alpha: 1).setFill()
             for row in 0..<3 {
                 for column in 0..<2 {
                     let dot = NSRect(x: bounds.midX - 5 + CGFloat(column) * 7,
-                                     y: bounds.midY - 9 + CGFloat(row) * 7,
+                                     y: bounds.midY - 8.5 + CGFloat(row) * 7,
                                      width: 3, height: 3)
                     NSBezierPath(ovalIn: dot).fill()
                 }

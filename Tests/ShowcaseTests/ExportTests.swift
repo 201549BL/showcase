@@ -1,3 +1,4 @@
+import AppKit
 import AVFoundation
 import CoreImage
 import CoreVideo
@@ -72,6 +73,13 @@ struct ExportTests {
             formats: formats + [.landscape], quality: .hd,
             didExport: { completed.append($0) }
         )
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        try VideoClipboard.copy(outputs, to: pasteboard)
+        let pastedURLs = pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL]
+        #expect(pastedURLs == outputs)
+        #expect(pasteboard.pasteboardItems?.count == 4)
+
         #expect(outputs.count == 4)
         #expect(completed == outputs)
         #expect(try store.loadProject(at: locations.projectURL) == project)

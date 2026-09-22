@@ -84,6 +84,11 @@ struct ProjectEditorView: View {
                 } label: { Image(systemName: "ellipsis") }
                 .help("Project actions")
 
+                if let status = model.clipboardStatus {
+                    Label(status, systemImage: "checkmark.circle")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
                 Button {
                     showingExport = true
                 } label: {
@@ -208,6 +213,15 @@ struct ProjectEditorView: View {
                 }
             }
             Text("\(model.selectedExportFormats.count) MP4 files · \(preciseTimeLabel(model.trimEnd - model.trimStart)) each")
+                .font(.caption).foregroundStyle(.secondary)
+            Button {
+                showingExport = false
+                Task { await model.copyVideoToClipboard() }
+            } label: {
+                Label("Copy to Clipboard", systemImage: "doc.on.doc")
+            }.appGlassButton(prominent: true)
+                .disabled(model.selectedExportFormats.isEmpty || model.isExporting)
+            Text("Paste into Finder or apps that accept video files.")
                 .font(.caption).foregroundStyle(.secondary)
             Button("Choose folder & export…") {
                 showingExport = false
@@ -495,7 +509,18 @@ struct ProjectEditorView: View {
     private var cursorSection: some View {
         VStack(alignment: .leading, spacing: 22) {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Bibata colors").font(.callout.weight(.semibold))
+                Picker("Theme", selection: Binding(
+                    get: { model.project.cursor.resolvedTheme },
+                    set: { theme in
+                        model.editProject(actionName: "Change Cursor Theme") { $0.cursor.theme = theme }
+                    }
+                )) {
+                    ForEach(CursorSettings.Theme.allCases) { theme in
+                        Text(theme.displayName).tag(theme)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text("Cursor colors").font(.callout.weight(.semibold))
                 HStack {
                     cursorPreset("Ice", fill: "#FFFFFF", outline: "#000000")
                     cursorPreset("Classic", fill: "#000000", outline: "#FFFFFF")

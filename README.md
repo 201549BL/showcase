@@ -4,7 +4,7 @@ A native Mac screen recorder for polished product demos. Record your screen, cur
 
 ## Install
 
-Download `Showcase-0.1.0-universal.zip` from [GitHub Releases](https://github.com/201549BL/Showcase/releases), unzip it, and drag **Showcase.app** into **Applications**.
+Download `Showcase-0.1.1-universal.zip` from [GitHub Releases](https://github.com/201549BL/Showcase/releases), unzip it, and drag **Showcase.app** into **Applications**.
 
 - macOS 14 or newer; Apple silicon and Intel Macs.
 - Microphone capture requires macOS 15 or newer.
@@ -17,12 +17,12 @@ Restart Showcase after granting Screen Recording access if macOS asks you to. Re
 
 Choose a screen or window in the floating bar. Use the microphone, system audio, and camera buttons to configure your inputs. Press **Record** for a cancellable three-second countdown.
 
-While recording, the floating bar shows elapsed time and a red **Stop recording** button. You can also stop from the recording item in the macOS menu bar. Stopping opens the editor. Showcase's own windows are excluded from full-display captures.
+While recording, the floating bar shows elapsed time and a red **Stop recording** button. You can also stop from the recording item in the macOS menu bar. Stopping brings the editor to the front on your current desktop. Showcase's own windows are excluded from full-display captures.
 
 ## Edit and export
 
 - Adjust the background, padding, corners, and aspect ratio in **Frame**. New recordings reuse your last background, including desktop images.
-- Change cursor size, smoothing, and click animation in **Cursor**.
+- Choose Bibata or Capitaine cursors, customize their colors, and adjust size, smoothing, and click animation in **Cursor**. New recordings reuse your cursor settings.
 - Generate screen zooms from recorded clicks, or add one at the playhead using **Add effect**.
 - Move timeline sections by dragging their bodies; resize them with the edge handles.
 - Drag the playhead to scrub. Use the orange trim rail to shorten the recording.
@@ -30,7 +30,7 @@ While recording, the floating bar shows elapsed time and a red **Stop recording*
 - During screen zooms, generated camera effects make the face camera smaller. Their size, timing, and transition remain editable.
 - Undo with **⌘Z** and redo with **⇧⌘Z**.
 - Toggle recorded audio in its timeline band; the setting applies to preview and export.
-- Select any combination of Desktop (16:9), Square (1:1), Shorts (9:16), and original size in Export, in 1080p or 4K. One export creates separate MP4 files in your chosen folder without changing the project’s canvas. Existing filenames receive a numbered suffix.
+- Select any combination of Desktop (16:9), Square (1:1), Shorts (9:16), and original size in Export, in 1080p or 4K. One export creates separate MP4 files in your chosen folder without changing the project’s canvas. Existing filenames receive a numbered suffix. Choose **Copy to Clipboard** to paste the rendered videos into Finder or apps that accept video files without choosing an export folder.
 
 New recordings are saved in `~/Movies/Showcase` as recoverable `.screenproject` folders. Keep the entire folder together: it contains screen/camera media, input-event metadata, and edits. Use **Open recording…** in the source popover to reopen a project. Recordings previously saved in `~/Movies/SmoothScreen` continue to work.
 

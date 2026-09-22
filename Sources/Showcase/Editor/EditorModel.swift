@@ -11,6 +11,7 @@ final class EditorModel: ObservableObject {
     @Published private(set) var exportProgressLabel = ""
     @Published private(set) var lastExportURLs: [URL] = []
     @Published var quality: ExportQuality = .hd
+    @Published private(set) var clipboardStatus: String?
     @Published private(set) var isExporting = false
     @Published private(set) var lastExportURL: URL?
     @Published var presentedError: PresentedError?
@@ -38,6 +39,8 @@ final class EditorModel: ObservableObject {
     let projectURL: URL
     let player = AVPlayer()
 
+    private let cursorPreferences: CursorPreferences
+    private var lastSavedCursorSettings: CursorSettings
     private let projectStore: ProjectStore
     private let events: [RecordedInputEvent]
     private let localizedEvents: [LocalizedInputEvent]
@@ -51,10 +54,12 @@ final class EditorModel: ObservableObject {
     init(
         projectURL: URL,
         projectStore: ProjectStore = ProjectStore(),
-        exporter: VideoExporter = VideoExporter()
+        exporter: VideoExporter = VideoExporter(),
+        cursorPreferences: CursorPreferences = CursorPreferences()
     ) throws {
         self.projectURL = projectURL
         self.projectStore = projectStore
+        self.cursorPreferences = cursorPreferences
         self.exporter = exporter
         var loadedProject = try projectStore.loadProject(at: projectURL)
         loadedProject.consolidateCameraAppearance()
@@ -64,6 +69,7 @@ final class EditorModel: ObservableObject {
         loadedProject.synchronizeCameraEffects()
         let loadedEvents = try projectStore.loadEvents(at: projectURL)
         project = loadedProject
+        lastSavedCursorSettings = loadedProject.cursor
         selectedExportFormats = [loadedProject.canvas.aspectRatio]
         events = loadedEvents
         localizedEvents = InputEventLocalizer().localize(
@@ -220,6 +226,10 @@ final class EditorModel: ObservableObject {
         player.isMuted = project.resolvedIsAudioMuted
         do {
             try projectStore.save(project, to: projectStore.locations(for: projectURL))
+            if project.cursor != lastSavedCursorSettings {
+                cursorPreferences.remember(project.cursor)
+                lastSavedCursorSettings = project.cursor
+            }
         } catch {
             present(error)
             return
@@ -703,6 +713,39 @@ final class EditorModel: ObservableObject {
             presentedError = PresentedError(message: "Export stopped after \(completed) of \(formats.count) videos. "
                 + (completed > 0 ? "Completed videos are saved in the chosen folder. " : "")
                 + error.localizedDescription)
+        }
+    }
+
+    func copyVideoToClipboard() async {
+        guard !isExporting, !selectedExportFormats.isEmpty else { return }
+        let formats = CanvasSettings.AspectRatio.allCases.filter { selectedExportFormats.contains($0) }
+        let exportQuality = quality
+        isExporting = true
+        clipboardStatus = nil
+        player.pause()
+        exportProgressLabel = "Preparing 1 of \(formats.count)…"
+        defer { isExporting = false; exportProgressLabel = "" }
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Showcase-Clipboard-" + UUID().uuidString, isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try projectStore.save(project, to: projectStore.locations(for: projectURL))
+            var completed = 0
+            let outputs = try await exporter.exportBatch(
+                projectURL: projectURL, directoryURL: directory, formats: formats, quality: exportQuality
+            ) { [self] _ in
+                completed += 1
+                if completed < formats.count {
+                    exportProgressLabel = "Preparing \(completed + 1) of \(formats.count)…"
+                }
+            }
+            try VideoClipboard.copy(outputs)
+            // Keep the temporary files available for paste, including after the editor closes.
+            clipboardStatus = formats.count == 1 ? "Video copied" : "\(formats.count) videos copied"
+        } catch {
+            try? FileManager.default.removeItem(at: directory)
+            presentedError = PresentedError(message: "Couldn’t copy video to the clipboard. " + error.localizedDescription)
         }
     }
 

@@ -62,6 +62,7 @@ final class RecordingCoordinator {
         let project = RecordingProject(
             recording: metadata,
             canvas: try BackgroundPreferences().canvasForNewRecording(in: locations.projectURL),
+            cursor: CursorPreferences().settingsForNewRecording,
             cameraOverlay: includesCamera ? .default : nil
         )
         try projectStore.save(project, to: locations)
