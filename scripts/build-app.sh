@@ -45,7 +45,12 @@ if [[ "$distribution" == 1 ]]; then
     [[ "$signature_details" == *'Authority=Developer ID Application:'* ]] || {
         echo 'The distribution app must be signed with Developer ID Application.' >&2; exit 1;
     }
-    lipo "$app_dir/Contents/MacOS/Showcase" -verify_arch arm64 x86_64
+    architectures="$(lipo -archs "$app_dir/Contents/MacOS/Showcase")"
+    for architecture in arm64 x86_64; do
+        [[ " $architectures " == *" $architecture "* ]] || {
+            echo "Distribution app is missing architecture: $architecture" >&2; exit 1;
+        }
+    done
 else
     codesign --force --sign "${signing_identity:--}" "$app_dir"
 fi
